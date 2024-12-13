@@ -3,6 +3,7 @@
 # ========================
 data/
 *.csv
+*.log
 
 # ========================
 # PYTHON FILES AND FOLDERS

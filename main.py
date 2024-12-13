@@ -81,6 +81,49 @@ def num_tokens_from_string(string: str, model: str = "gpt-3.5-turbo") -> int:
         raise e
 
 
+def compute_tokens_for_dataframe(
+        df: pd.DataFrame,                       # dataframe to compute number of tokens for
+        cols: str | list[str],                  # list of columns to compute number of tokens for
+        token_col: str = "tokens",              # name of the column to store the number of tokens
+        model: str = "gpt-3.5-turbo"            # model to use for tokenization
+        ) -> pd.Series:
+    try:
+        # Get the encoding for the specified model
+        encoding = encoding_for_model(model)
+        # make sure cols is a lits
+        if isinstance(cols, str):
+            cols = [cols]
+        # Encode the string and return the number of tokens
+        tmp = df[cols].apply(lambda x: str(x.to_dict()), axis=1)
+        tmp = tmp.map(lambda x: len(encoding.encode(x)))
+        if token_col is not None:
+            df[token_col] = tmp
+        # Encode the string and return the number of tokens
+        return tmp
+    except Exception as e:
+        logger.error(f"Error getting number of tokens from dataframe: {e}")
+        logger.error(f"Moost likely the model {model} is not supported.")
+        raise e
+
+
+def build_airline_names_mapping_dict_from_training_set(
+        training_file: str,                     # path to the training file
+        airline_col: str = "airline",           # name of the column with airline names
+        airline_id_col: str = "airline_id"       # name of the column with airline ids
+        ) -> dict:
+    try:
+        # Get the unique airline names
+        airline_names = training_set[airline_col].unique()
+        # Get the unique airline ids
+        airline_ids = training_set[airline_id_col].unique()
+        # Create a dictionary mapping airline names to airline ids
+        airline_names_mapping = dict(zip(airline_names, airline_ids))
+        return airline_names_mapping
+    except Exception as e:
+        logger.error(f"Error building airline names mapping dictionary from training set: {e}")
+        raise e
+
+
 def main():
     # Create an instance of the OpenAI class
     client = OpenAI()
@@ -99,8 +142,15 @@ def main():
     # print(completion.choices[0].message.content)
 
     # Get the number of tokens in a string
-    num_tokens = num_tokens_from_string("A config file is required to run the application. Please create a config file called `config.yaml` in the current directory.")
-    print(f"Number of tokens: {num_tokens}")
+    # num_tokens = num_tokens_from_string("A config file is required to run the application. Please create a config file called `config.yaml` in the current directory.")
+    # print(f"Number of tokens: {num_tokens}")
+
+    # Get the number of tokens in a dataframe
+    df = pd.DataFrame({
+        "text": ["A config file is required to run the application. Please create a config file called `config.yaml` in the current directory.", "This is a test string."]
+    })
+    compute_tokens_for_dataframe(df, "text")
+    print(df)
 
 
 if __name__ == '__main__':
