@@ -1,0 +1,11 @@
+
+
+# OpenAI Configuration
+openai:
+  # There are two ways to set your API key:
+  # 1. Set it here in the config file
+  # 2. Set it as an environment variable named OPENAI_API_KEY
+  api_key:
+  model: gpt-3.5-turbo
+  max_tokens: 160000
+  max_prompt_tokens: 8000

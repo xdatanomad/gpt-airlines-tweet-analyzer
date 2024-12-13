@@ -1,0 +1,6 @@
+pandas
+jupyterlab
+codetiming
+humanfriendly
+tiktoken
+openai
