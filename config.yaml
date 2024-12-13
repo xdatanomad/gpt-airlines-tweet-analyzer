@@ -9,3 +9,71 @@ openai:
   model: gpt-3.5-turbo
   max_tokens: 160000
   max_prompt_tokens: 8000
+  temperature: 0.0
+
+# ========================================
+# PROMPTS
+# ========================================
+# prompts used by the app
+prompts:
+  # prompt for the airline mapping dictionary task
+  # this prompt is ran on the training data to build a dictionary of airline names and their aliases
+  airline_name_mapping:
+    system: You are an expert in building a reference dictionary of airline names and aliases from tweets.
+    prompt: |
+      Please help build a mapping dictionary that helps identify airline names and aliases in tweets.
+      I am providing you with a training set of tweets. Each line of DATA contains a tweet and a list of CORRECTLY IDENTIFIED airline name in the same tweet.
+      I like you to build a dictionary of keywords, airline names, aliases, abbreviations, @ handles, or any other text in the tweet that resulted in airline name mapping in tweets.
+      The dictionary should map airline names to their aliases from the DATA.
+      The response should be stored as a JSON object.
+
+      EXAMPLE
+      -------
+      SouthwestAir bags fly free..just not to where you're going.,['Southwest Airlines']
+      "@AmericanAir I need help with a reservation purchased on @AmericanAir but operated on @USAirways, can't get through on the 800#","['American Airlines', 'US Airways']"
+      Jet Blue I don't know- no one would tell me where they were coming from - I would guess so as that's where we had all the changes to flights,['JetBlue Airways']
+      US Air FUK U US AIRWAYS WITH YO SHITTY CHICKEN SALAD SANDWICH THAT SO OVERPRICED AND U FUKING MAKE ME WAIT IN A 6 HR LAYOVER FUK U AND,['US Airways']
+      @united $55 cab ride to dfw from love got me my bag. Reimburse?,['United Airlines']
+      AA you're not finding it bc @united  rebooked us on your airline when they realized they couldn't get us home - and we're at ORD,"['United Airlines', 'American Airlines']"
+      "Virgin Am I rang, but there is a wait for 35 minutes!! I can book the same ticket through a vendor, fix your site",['Virgin America']
+      "DL I'm trying to book a flight on your website and it's not working.",['Delta Air Lines']
+
+      The sample response:
+      {
+        "American Airlines": ["@AmericanAir", "AA"],
+        "Delta Air Lines": ["DL"],
+        "Southwest Airlines": ["SouthwestAir", ]
+        "US Airways": ["@USAirways", "US Air"],
+        "United Airlines": ["@united"],
+        "Jet Blue Airways": ["Jet Blue"],
+        "Virgin America": ["Virgin Am"]
+      }
+
+      IMPORTANT INSTRUCTIONS:
+      -----------------------
+      1. Ensure the response is in JSON format.
+      2. Ensure JSON format follows the example above.
+      3. Ensure to map all the aliases and abbreviations for each airline into a single key.
+      4. It is NOT important that the dictionary is sorted or in order.
+      5. It is VERY important that the dictionary is a complete and unique mapping of airline names to their aliases derived only from the DATA below.
+
+      NOW, please process these DATA lines:
+
+      DATA:
+      =====
+      {data}
+  build_prompt_2: |
+    The following is a conversation with an AI assistant. The assistant is helpful, creative, clever, and very friendly.
+
+    Human: Hello, who are you?
+    AI: I am an AI assistant. How can I help you today?
+    Human: What is your name?
+    AI: My name is Assistant.
+    Human: What can you do for me?
+    AI: I can help you with a variety of tasks, such as answering questions, providing information, and assisting with research.
+    Human: Can you tell me a joke?
+    AI: Sure! Why did the scarecrow win an award? Because he was outstanding in his field!
+    Human: That's funny! Can you tell me another joke?
+    AI: Of course! Why did the math book look sad? Because it had too many problems.
+    Human: Haha! You're good at telling jokes.
+    AI: Thank you! I'm glad you enjoyed them. Is there anything else I can help you with?
