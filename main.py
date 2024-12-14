@@ -918,7 +918,8 @@ def submit_fine_tuning_model_job():
 @click.option('--config-file', type=click.Path(exists=True), help='Path to YAML config file. If omitted config.yaml is used.', required=False)
 @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False), default='INFO', help='Application log level')
 @click.option('--num-examples', type=int, default=10, help='Number of examples to be used with few-shot and RAG methods')
-def main(run, input_file, config_file, log_level, num_examples, **kwargs):
+@click.option('--nrows', type=int, default=None, help='Random sample number of rows to run instead of the entire dataset. Good for testing.')
+def main(run, input_file, config_file, log_level, num_examples, nrows, **kwargs):
     """
     Main function to run various tweet analysis methods based on the provided command line arguments.
     Args:
@@ -954,15 +955,23 @@ def main(run, input_file, config_file, log_level, num_examples, **kwargs):
     job_run.action = run    # log the action taken in this job
     if run == 'zero_shot':
         df = read_tweets_to_dataframe(filepath=input_file)
+        if nrows is not None:
+            df = df.sample(nrows)
         df = run_zero_shot(df)
     elif run == 'few_shot':
         df = read_tweets_to_dataframe(filepath=input_file)
+        if nrows is not None:
+            df = df.sample(nrows)
         df = run_few_shot(df, num_examples)
     elif run == 'rag':
         df = read_tweets_to_dataframe(filepath=input_file)
+        if nrows is not None:
+            df = df.sample(nrows)
         df = run_rag(df, num_examples)
     elif run == 'fine_tuning':
         df = read_tweets_to_dataframe(filepath=input_file)
+        if nrows is not None:
+            df = df.sample(nrows)
         df = run_fine_tuning(df)
     elif run == 'setup_rag':
         build_rag_embeddings_db(training_file=input_file)
