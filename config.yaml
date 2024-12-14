@@ -1,12 +1,10 @@
 
 files:
   # Path to the training data file
-  training_file: ./data/airline_train.csv
-  test_file: ./data/airline_test.csv
-  # Path to the output file
-  output_file: ./data/output.csv
-  training_cache: ./training_cache.parquet
-  fine_tune_file: ./fine_tune.jsonl
+  training_file: data/airline_train.csv
+  test_file: data/airline_test.csv
+  training_embeddings_file: data/airline_embeddings.parquet
+  fine_tuning_file: data/airline_fine_tune.jsonl
 
 # OpenAI Configuration
 openai:

@@ -13,13 +13,19 @@ from scipy import spatial
 from tenacity import retry, stop_after_attempt, wait_incrementing
 
 
+# ========================================
+# SETTING UP LOGGING AND APPLICATION CONFIGURATION
+#
+# Application configuration is loaded from a config file called `config.yaml`.
+# The configuration file is required to run the application.
+# This file should be placed in the current directory.
+# This file contains many parameters such as model names, prompts, etc.
+# ========================================
+
+# Path to the default config file
 DEFAULT_CONFIG_FILE = "config.yaml"
 
-
-logger: logging.Logger = None
-config: dict = {}
-
-# Set up logging
+# Setup logging
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
     logger = logging.getLogger('main')
     level = getattr(logging, log_level.upper(), logging.INFO)
@@ -43,11 +49,7 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
     return logger
 
 
-# set up module logger
-logger: logging.Logger = setup_logging("INFO")
-
-
-# read config file
+# Read YAML configuration file
 def load_config(
         config_file: str = DEFAULT_CONFIG_FILE, 
         default_configs: dict = {}
@@ -67,98 +69,107 @@ def load_config(
     return default_configs
 
 
-# setup application configuration
-config = load_config(DEFAULT_CONFIG_FILE, config)
+# setup logging and configuration
+logger: logging.Logger = setup_logging("INFO")
+config: dict = load_config(DEFAULT_CONFIG_FILE)
+
+# Other useful default configurations
+DEFAULT_MODEL = "gpt-3.5-turbo"                                                 # Default model name
+DEFAULT_TEMPRATURE = 0.0                                                        # Default temperature
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"                              # Default embedding model
+
+DEFAULT_TRAINING_FILEPATH = "data/airline_train.csv"                            # The provided training file. Used by the few-shot prompting method
+DEFAULT_TRAINING_EMBEDDINGS_FILEPATH = "data/airline_embeddings.parquet"        # Computed embeddings for the training file. Used by the RAG method
+DEFAULT_FINE_TUNING_FILEPATH = "data/airline_fine_tune.jsonl"                   # Model Fine-tuning file. Used by the fine-tuning method
 
 
-@Timer(name="tokenizer", text="Metrics::Tokenizer: secs={:.3f}", logger=logger.debug)
-def num_tokens_from_string(string: str, model: str = "gpt-3.5-turbo") -> int:
-    try:
-        # Get the encoding for the specified model
-        encoding = encoding_for_model(model)
-        # Encode the string and return the number of tokens
-        return len(encoding.encode(string))
-    except Exception as e:
-        logger.error(f"Error getting number of tokens from string: {e}")
-        logger.error(f"Moost likely the model {model} is not supported.")
-        raise e
+# ========================================
+# OpenAI Base API Calls
+#
+# These functions are the base OpenAI API calls used by all other functions.
+# This is the best place to change main parameters like model name, temperature, etc.
+# ========================================
 
-
-def compute_tokens_for_dataframe(
-        df: pd.DataFrame,                       # dataframe to compute number of tokens for
-        cols: str | list[str],                  # list of columns to compute number of tokens for
-        token_col: str = "tokens",              # name of the column to store the number of tokens
-        model: str = "gpt-3.5-turbo"            # model to use for tokenization
-        ) -> pd.Series:
-    try:
-        # Get the encoding for the specified model
-        encoding = encoding_for_model(model)
-        # make sure cols is a lits
-        if isinstance(cols, str):
-            cols = [cols]
-        # Encode the string and return the number of tokens
-        tmp = df[cols].apply(lambda x: str(x.to_dict()), axis=1)
-        tmp = tmp.map(lambda x: len(encoding.encode(x)))
-        if token_col is not None:
-            df[token_col] = tmp
-        # Encode the string and return the number of tokens
-        return tmp
-    except Exception as e:
-        logger.error(f"Error getting number of tokens from dataframe: {e}")
-        logger.error(f"Moost likely the model {model} is not supported.")
-        raise e
-
-
+# check if OPENAI_API_KEY is set
+if "OPENAI_API_KEY" not in os.environ:
+    logger.error("OPENAI_API_KEY environment variable not set.")
+    logger.info("Please set the OPENAI_API_KEY environment variable. For more information, see: https://platform.openai.com/docs/quickstart")
+    raise ValueError("OPENAI_API_KEY environment variable not set.")
 
 # setup openai client
 client = OpenAI()
 
 
+# Retry (using tenacity) if call fails due to rate limiting
 @retry(stop=stop_after_attempt(3), wait=wait_incrementing(start=0.6, increment=0.6, max=3))
 def chat_completion(
         system_message: str,                    # system message
         prompt: str,                            # user message
         ) -> dict:
     try:
-        # Get the completion from the API
-        global client
-        model = config.get("openai", {}).get("model", "gpt-3.5-turbo")
-        # get openai chat completion fine-tuning parameters
-        temperature = config.get("openai", {}).get("temperature", 0.0)
+        # Get the model configiration
+        model = config.get("openai", {}).get("model", DEFAULT_MODEL)
+        temperature = config.get("openai", {}).get("temperature", DEFAULT_TEMPRATURE)
         top_p = config.get("openai", {}).get("top_p", 0.0)
         frequency_penalty = config.get("openai", {}).get("frequency_penalty", 0.0)
         presence_penalty = config.get("openai", {}).get("presence_penalty", 0.0)
+        # Set model output format to JSON
         response_format = {"type": "json_object"}
-
-        completion = client.chat.completions.create(
+        # Call chat completion API
+        resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system_message},      # system message. e.g. "You are an expert in identifying airlines mentioned in tweets."
+                {"role": "user", "content": prompt}                 # main prompt message. e.g. "What airlines are mentioned in this tweet: {tweet}"
             ],
-            temperature=temperature,
-            response_format=response_format,
-            top_p=top_p,
-            frequency_penalty=frequency_penalty,
-            presence_penalty=presence_penalty,
+            temperature=temperature,                    # temperature parameter: 0.0 to 1.0. Lower values are more deterministic
+            response_format=response_format,            # response format: json_object, json, or plain_text. We always use json_object. Use json for newer models. (gpt-4-turbo)
+            top_p=top_p,                                # top_p parameter: 0.0 to 1.0. Lower values are more deterministic
+            frequency_penalty=frequency_penalty,        # frequency_penalty parameter: 0.0 to 1.0. Lower values penalize frequent tokens
+            presence_penalty=presence_penalty,          # presence_penalty parameter: 0.0 to 1.0. Lower values penalize tokens that are already present in the prompt
         )
-        # print the response token uasge
-        # logger.debug(f"promopt:\n{prompt}")
-        logger.info(f"ChatCompletion::TokenUsage: prompt={completion.usage.prompt_tokens}, response={completion.usage.completion_tokens}, total={completion.usage.total_tokens}")
-        resp = completion.choices[0].message.content
+        # Log token usage
+        logger.debug(f"ChatCompletion::TokenUsage: prompt={resp.usage.prompt_tokens}, response={resp.usage.completion_tokens}, total={resp.usage.total_tokens}")
         # convert the response to a json
+        resp = resp.choices[0].message.content
         resp = json.loads(resp)
         return resp
     except json.JSONDecodeError as e:
-        logger.warning(f"GPT response: {completion.choices[0].message.content}")
+        # Error due to invalid JSON response
+        # Remember: OpenAI API responses are NOT guaranteed to be valid JSON in gpt-3.5-turbo
+        # Remember: Prompts are retried up to 3 times using tenacity if they fail
+        logger.warning(f"GPT response: {resp.choices[0].message.content}")
         logger.error(f"Invalid GPT JSON response. Error parsing JSON output: {e}")
         raise e
     except Exception as e:
+        # Any other error
+        # Remember: Prompts are retried up to 3 times using tenacity if they fail
         logger.error(f"Error getting chat completion: {e}")
         raise e
 
 
-def parse_response_json_for_list_of_airlines(response: dict) -> list:
+# Retry (using tenacity) if call fails due to rate limiting
+@retry(stop=stop_after_attempt(3), wait=wait_incrementing(start=0.6, increment=0.6, max=3))
+def get_embeddings(
+        text: str,                              # text to get embeddings for
+        ) -> list:
+    # Get the encoding for the specified model
+    embedding_model = config.get("openai", {}).get("embedding_model", DEFAULT_EMBEDDING_MODEL)
+    resp = client.embeddings.create(
+        model=embedding_model,
+        input=text,
+    )
+    # logger.debug(f"Embeddings::TokenUsage: total={resp.usage.total_tokens}")
+    return resp.data[0].embedding
+
+
+# ========================================
+# Utility Functions
+#
+# These functions are utility functions used by other functions.
+# ========================================
+
+def post_process_json_response(response: dict) -> list:
     # if the response if already a list, return it
     if isinstance(response, list):
         return response
@@ -178,7 +189,99 @@ def parse_response_json_for_list_of_airlines(response: dict) -> list:
     raise ValueError("Invalid response JSON format. No list of airlines found.")
 
 
-def airline_name_extractor_zeroshot(
+def load_training_df(
+        training_file: str = None,                     # path to the training file
+        ) -> pd.DataFrame:
+    
+    # get the training file name form the config if not set
+    if training_file is None:
+        training_file = config.get("files", {}).get("training_file", DEFAULT_TRAINING_FILEPATH)
+    # read the training file CSV
+    # please note:
+    #   - airlines column is parsed as a list
+    #   - badlines and encoding errors are skipped
+    df = pd.read_csv(
+        training_file,
+        skip_blank_lines=True,
+        skipinitialspace=True,
+        encoding_errors='ignore',                   # accounting for utf encoding errors
+        on_bad_lines='skip',                        # skip bad tweets and lines
+        usecols=["tweet", "airlines"],              # ensure required columns are present
+        converters={"airlines": eval},              # parse the airlines column as a list
+        )
+    # check if all airlines were correctly parsed as a list
+    if not all([isinstance(x, list) for x in df["airlines"]]):
+        logger.error(f"airlines column is not a list of strings")
+        raise ValueError(f"airlines column is not a list of strings")
+    logger.info(f"Loaded training set from file: {training_file}")
+    # return the training dataframe
+    return df
+
+
+def load_training_embeddings_df(
+        training_embeddings_file: str = None,                     # path to the training file
+        ) -> pd.DataFrame:
+    
+    # get the training file name form the config if not set
+    if training_embeddings_file is None:
+        training_embeddings_file = config.get("files", {}).get("training_embeddings_file", DEFAULT_TRAINING_EMBEDDINGS_FILEPATH)
+    # if the file doesn't exist, throw a message with instructions to compute the embeddings
+    if not os.path.exists(training_embeddings_file):
+        logger.error(f"Training embeddings file not found: {training_embeddings_file}")
+        logger.info(f"Please run the `compute_and_save_embeddings_for_training_set` function to compute the embeddings.")
+        raise FileNotFoundError(f"Training embeddings file not found: {training_embeddings_file}")
+    # read the embeddings parquet file
+    df = pd.read_parquet(training_embeddings_file)
+    logger.info(f"Loaded training set with embeddings from file: {training_embeddings_file}")
+    # return the training dataframe with embeddings
+    return df
+
+
+def embeddings_rag_search(
+        tweet: str,                                 # tweet to get similiar tweets for
+        training_df: pd.DataFrame,                  # training dataframe with embeddings
+        nrows: int = 5,                             # number of similiar tweets to return
+        embeddings_col: str = "tweet_embeddings",   # column name for the embeddings
+        ) -> pd.DataFrame:
+    try:
+        # get the embeddings for the tweet
+        tweet_embeddings = get_embeddings(tweet)
+        # calculate the cosine similarity between the tweet and all the tweets in the training set
+        training_df["similarity"] = training_df[embeddings_col].map(lambda x: 1 - spatial.distance.cosine(tweet_embeddings, x))
+        # get the top num_tweets similiar tweets
+        return training_df.nlargest(nrows, "similarity")
+    except Exception as e:
+        logger.error(f"Error getting similiar tweets from embeddings: {e}")
+        raise e
+
+
+# ========================================
+# Main Application Actions
+#
+# These functions are the main application functions:
+# ========================================
+
+def compute_and_save_embeddings_for_training_set(
+        training_file: str = None,                     # path to the training file
+        ) -> None:
+    
+    # log start message
+    logger.info('-' * 80)
+    logger.info("Computing embeddings for the training set.")
+    logger.info("This is a one-time operation. The embeddings will be cached for future use.")
+    logger.info("This will take a while! Go grab a coffee :)")
+
+    # load the training file
+    df = load_training_df(training_file)
+    # calculate embeddings for the tweets column
+    df["tweet_embeddings"] = df["tweet"].map(get_embeddings)
+    # save the embeddings to a parquet file
+    embeddings_file = config.get("files", {}).get("training_cache", DEFAULT_TRAINING_EMBEDDINGS_FILEPATH)
+    df.to_parquet(embeddings_file)
+    logger.info(f"Embeddings saved to file: {embeddings_file}")
+
+
+def zero_shot_example(
         df: pd.DataFrame,
         tweet_col: str = "tweet",
         airlines_col: str = "airlines_mentioned",
@@ -196,7 +299,7 @@ def airline_name_extractor_zeroshot(
             prompt = prompt.format(tweet=row[tweet_col])
             json_resp = chat_completion(system_message, prompt)
             # parse the response
-            airlines = parse_response_json_for_list_of_airlines(json_resp)
+            airlines = post_process_json_response(json_resp)
             # add the airlines to the dataframe
             df.at[i, airlines_col] = airlines
             # check if the airlines are correct
@@ -208,84 +311,9 @@ def airline_name_extractor_zeroshot(
     return df
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_incrementing(start=0.6, increment=0.6, max=3))
-def get_embeddings(
-        text: str,                              # text to get embeddings for
-        ) -> list:
-    # Get the encoding for the specified model
-    embedding_model = config.get("openai", {}).get("embedding_model", "text-embedding-3-small")
-    resp = client.embeddings.create(
-        model=embedding_model,
-        input=text,
-    )
-    # logger.debug(f"Embeddings::TokenUsage: total={resp.usage.total_tokens}")
-    return resp.data[0].embedding
 
 
-def load_training_set(
-        training_file: str,                     # path to the training file
-        ) -> pd.DataFrame:
-    try:
-        # firs try to see if a cached version of the training set is available
-        # we save a cached version to save tokens for re-computing embeddings
-        cache_file = config["files"]["training_cache"]
-        if os.path.exists(cache_file):
-            logger.info(f"Loading training set from cache file: {cache_file}")
-            df = pd.read_parquet(cache_file)
-            return df
-
-        # if not, then load the training set from the file
-        # read the training file CSV
-        # please note:
-        #   - airlines column is parsed as a list
-        #   - badlines and encoding errors are skipped
-        df = pd.read_csv(
-            training_file,
-            skip_blank_lines=True,
-            skipinitialspace=True,
-            encoding_errors='ignore',                   # accounting for utf encoding errors
-            on_bad_lines='skip',                        # skip bad tweets and lines
-            usecols=["tweet", "airlines"],              # ensure required columns are present
-            converters={"airlines": eval},              # parse the airlines column as a list
-            )
-        # check if all airlines were correctly parsed as a list
-        if not all([isinstance(x, list) for x in df["airlines"]]):
-            logger.error(f"airlines column is not a list of strings")
-            raise ValueError(f"airlines column is not a list of strings")
-        
-        # calculate embeddings for the tweets column
-        logger.info(f"Calculating embeddings for on tweets for the first time. This will take a few minutes.")
-        logger.info("Embeddings are cached for future use.")
-        df["tweet_embeddings"] = df["tweet"].map(get_embeddings)
-
-        # cache the training set for future use
-        df.to_parquet(cache_file)
-        # return the training dataframe with embeddings
-        return df
-    except Exception as e:
-        logger.error(f"Error loading training set from file: {training_file}")
-        raise e
-
-
-def get_similiar_tweets_from_embeddings(
-        tweet: str,                             # tweet to get similiar tweets for
-        training_df: pd.DataFrame,              # training dataframe with embeddings
-        nrows: int = 5,                         # number of similiar tweets to return
-        embeddings_col: str = "tweet_embeddings",   # column name for the embeddings
-        ) -> pd.DataFrame:
-    try:
-        # get the embeddings for the tweet
-        tweet_embeddings = get_embeddings(tweet)
-        # calculate the cosine similarity between the tweet and all the tweets in the training set
-        training_df["similarity"] = training_df[embeddings_col].map(lambda x: 1 - spatial.distance.cosine(tweet_embeddings, x))
-        # get the top num_tweets similiar tweets
-        return training_df.nlargest(nrows, "similarity")
-    except Exception as e:
-        logger.error(f"Error getting similiar tweets from embeddings: {e}")
-        raise e
-
-
-def few_shot_airline_name_extractor(
+def few_shot_example(
         df: pd.DataFrame,
         num_examples: int = 10,
         tweet_col: str = "tweet",
@@ -293,8 +321,7 @@ def few_shot_airline_name_extractor(
         test_col: str = "airlines",
         ):
     # load the training set
-    training_file = config["files"]["training_file"]
-    training_df = load_training_set(training_file)
+    training_df = load_training_df()
     # get a few examples from the training set
     fewshot_df = training_df.sample(num_examples)
     fewshot_csv_string = fewshot_df.to_csv(index=False, header=True, quoting=csv.QUOTE_MINIMAL)
@@ -310,7 +337,7 @@ def few_shot_airline_name_extractor(
             prompt = prompt.format(tweet=row[tweet_col], examples=fewshot_csv_string)
             json_resp = chat_completion(system_message, prompt)
             # parse the response
-            airlines = parse_response_json_for_list_of_airlines(json_resp)
+            airlines = post_process_json_response(json_resp)
             # add the airlines to the dataframe
             df.at[i, airlines_col] = airlines
             # check if the airlines are correct
@@ -324,7 +351,7 @@ def few_shot_airline_name_extractor(
     return df
 
 
-def fewshot_rag_airline_name_extractor(
+def rag_few_shot_example(
         df: pd.DataFrame,
         num_examples: int = 5,
         tweet_col: str = "tweet",
@@ -332,8 +359,7 @@ def fewshot_rag_airline_name_extractor(
         test_col: str = "airlines",
         ):
     # load the training set
-    training_file = config["files"]["training_file"]
-    training_df = load_training_set(training_file)
+    embeddings_df = load_training_embeddings_df
     df[airlines_col] = None
     df["correct"] = False
     for i, row in df.iterrows():
@@ -343,26 +369,24 @@ def fewshot_rag_airline_name_extractor(
             system_message = config["prompts"]["few_shot"]["system"]
             prompt = config["prompts"]["few_shot"]["prompt"]
             # find smiliar tweets from a cosine similarity search on embeddings
-            sim_tweets = get_similiar_tweets_from_embeddings(row[tweet_col], training_df, nrows=num_examples)
+            sim_tweets = embeddings_rag_search(row[tweet_col], embeddings_df, nrows=num_examples)
             examples_csv = sim_tweets[["tweet", "airlines"]].to_csv(index=False)
             prompt = prompt.format(tweet=row[tweet_col], examples=examples_csv)
             json_resp = chat_completion(system_message, prompt)
             # parse the response
-            airlines = parse_response_json_for_list_of_airlines(json_resp)
+            airlines = post_process_json_response(json_resp)
             # add the airlines to the dataframe
             df.at[i, airlines_col] = airlines
             # check if the airlines are correct
             if eval(f"list({row[test_col]})") == airlines:
                 df.at[i, "correct"] = True
-            # if i > 50:
-            #     break
         except Exception as e:
             logger.error(f"Error extracting airline names from tweet: {row[tweet_col]}")
             logger.error(f"Error: {e}")
     return df
 
 
-def fine_tune_model():
+def fine_tune_model_jobrun():
     # from a gpt model based on the training set
     # load the training set
     try:
@@ -428,98 +452,6 @@ def fine_tune_model():
         logger.error(f"Fine-tuning job failed! Error: {e}")
         raise e
 
-def chunk_dataframe_by_max_tokens(df: pd.DataFrame, max_tokens=12000, tokens_col: str = "tokens"):
-    """returns the next chunk of the dataframe until a max number of tokens are reached"""
-    start_index = 0
-    end_index = 0
-    token_sum = 0
-    for i, row in df.iterrows():
-        token_sum += row[tokens_col]
-        if token_sum > max_tokens:
-            end_index = i - 1
-            yield df.iloc[start_index:end_index]
-            start_index = end_index
-            token_sum = row[tokens_col]
-    # yield the last chunk
-    if start_index < len(df):
-        yield df.iloc[start_index:]
-
-
-def build_airline_names_mapping_dict_from_training_set(
-        training_file: str,                     # path to the training file
-        ) -> dict:
-    try:
-        df = pd.read_csv(
-            training_file,
-            skip_blank_lines=True,
-            skipinitialspace=True,
-            encoding_errors='ignore',
-            on_bad_lines='skip',
-            )
-        # check the columns to make sure we have the required columns
-        cols = ["tweet", "airlines"]
-        if not all([col in df.columns for col in cols]):
-            logger.error(f"Missing required columns in training file: {cols}")
-            raise ValueError(f"Missing required columns in training file: {cols}")
-        # parse the airlines column as a list
-        df["airlines"] = df["airlines"].apply(lambda x: eval(f"list({x})"))
-        # compute the number of tokens
-        compute_tokens_for_dataframe(df, cols=cols)
-        
-        # data
-        print(f"df shape: {df.shape}")
-        airline_aliases = {}
-        total_rows = 0
-        for chunk in chunk_dataframe_by_max_tokens(df):
-            print(f"chuck size: {chunk.shape}, tokens: {chunk['tokens'].sum()}, mix/max index: {chunk.index.min()}/{chunk.index.max()}")
-            # chunk['str_col'] = chunk.apply(lambda x: x.to_dict(), axis=1)
-            total_rows += len(chunk)
-            # reset the index
-            chunk.reset_index(drop=True, inplace=True)
-            # output the chunk to a csv formatted string buffer
-            csv_buffer = chunk[cols].to_csv(index=False, header=True, quoting=csv.QUOTE_STRINGS)
-            # print(csv_buffer)
-            # call the completion function
-            # call the prompt completion function
-            system_message = config["prompts"]["airline_name_mapping"]["system"]
-            prompt = config["prompts"]["airline_name_mapping"]["prompt"]
-            top_p = config["prompts"]["airline_name_mapping"]["top_p"]
-            frequency_penalty = config["prompts"]["airline_name_mapping"]["frequency_penalty"]
-            presence_penalty = config["prompts"]["airline_name_mapping"]["presence_penalty"]
-            prompt = prompt.format(data=csv_buffer)
-            print(prompt)
-            completion = chat_completion(system_message, prompt, top_p=top_p, frequency_penalty=frequency_penalty, presence_penalty=presence_penalty)
-            print("\n\n\n")
-            print(completion)
-            print("\n\n\n")
-            for k, v in completion.items():
-                if k not in airline_aliases:
-                    airline_aliases[k] = v
-                else:
-                    airline_aliases[k].extend(v)
-        # make sure the values are unique
-        for k, v in airline_aliases.items():
-            airline_aliases[k] = list(set(v))
-        print(f"total rows: {total_rows}")
-        print("\n\n\n")
-        print(airline_aliases)
-        print("\n\n\n")
-
-        # # post process the airline names
-        # system = config["prompts"]["airline_name_mapping_post_process"]["system"]
-        # prompt = config["prompts"]["airline_name_mapping_post_process"]["prompt"]
-        # # insert data
-        # prompt = prompt.format(data=airline_aliases)
-        # completion = chat_completion(system, prompt)
-        # # save the airline names into the yaml config file
-        # data = {"airlines_mapping": completion}
-        data = {"airlines_mapping": airline_aliases}
-        with open("airlines_mapping.yml", "w") as file:
-            yaml.dump(data, file)
-    except Exception as e:
-        logger.error(f"Error building airline names mapping dictionary from training set: {e}")
-        raise e
-
 
 def main():
     # Create an instance of the OpenAI class
@@ -563,21 +495,26 @@ def main():
     # rdf.to_csv("data/airlines_fewshot.csv", index=False)
 
 
+# ========================================
+# Unit Tests
+#
+# These functions are only used for testing purposes.
+# ========================================
+
 def test_similirity_search():
     # load the training set
-    training_file = config["files"]["training_file"]
-    training_df = load_training_set(training_file)
-    print(training_df)
+    embeddings_df = load_training_embeddings_df()
+    print(embeddings_df)
     tweet = r"US Airways i tried it but doesnt help very much and Reservation seems to be overwhelmed with some issues"
-    sim_tweets = get_similiar_tweets_from_embeddings(tweet, training_df)
-    print(sim_tweets)
+    similar_tweets = embeddings_rag_search(tweet, embeddings_df)
+    print(similar_tweets)
 
 
-def test_fine_tune_model():
-    fine_tune_model()
+def test_fine_tune_model_job():
+    fine_tune_model_jobrun()
 
 
 if __name__ == '__main__':
     # main()
     # test_similirity_search()
-    test_fine_tune_model()
+    test_fine_tune_model_job()
