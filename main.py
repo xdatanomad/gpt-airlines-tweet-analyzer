@@ -162,11 +162,15 @@ client = OpenAI()
 def chat_completion(
         system_message: str,                    # system message
         prompt: str,                            # user message
+        model: str = None,                      # model name
+        temperature: float = None,              # temperature parameter
         ) -> dict:
     try:
         # Get the model configiration
-        model = config.get("openai", {}).get("model", DEFAULT_MODEL)
-        temperature = config.get("openai", {}).get("temperature", DEFAULT_TEMPRATURE)
+        if model is None:
+            model = config.get("openai", {}).get("model", DEFAULT_MODEL)
+        if temperature is None:
+            temperature = config.get("openai", {}).get("temperature", DEFAULT_TEMPRATURE)
         top_p = config.get("openai", {}).get("top_p", 0.0)
         frequency_penalty = config.get("openai", {}).get("frequency_penalty", 0.0)
         presence_penalty = config.get("openai", {}).get("presence_penalty", 0.0)
@@ -310,6 +314,9 @@ def embeddings_rag_search(
     try:
         # get the embeddings for the tweet
         tweet_embeddings = get_embeddings(tweet)
+        # filter out the embeddings column with None or empty list of embeddings
+        training_df = training_df[training_df[embeddings_col].notnull()]
+        training_df = training_df[training_df[embeddings_col].apply(lambda x: len(x) > 0)]
         # calculate the cosine similarity between the tweet and all the tweets in the training set
         training_df["similarity"] = training_df[embeddings_col].map(lambda x: 1 - spatial.distance.cosine(tweet_embeddings, x))
         # get the top num_tweets similiar tweets
@@ -349,32 +356,28 @@ def zero_shot_example(
         df: pd.DataFrame,
         tweet_col: str = "tweet",
         airlines_col: str = "airlines_mentioned",
-        test_col: str = "airlines",
         ):
+    # setup the result col
     df[airlines_col] = None
-    df["correct"] = False
     for i, row in df.iterrows():
         try:
             logger.info(f"line: {i + 1} tweet: {row[tweet_col]}")
-            # call the completion function
+            # grab the right prompt from the config
             system_message = config["prompts"]["zero_shot"]["system"]
             prompt = config["prompts"]["zero_shot"]["prompt"]
-            # df[airlines_col] = df[tweet_col].map(lambda x: )
+            # insert the tweet into the prompt
             prompt = prompt.format(tweet=row[tweet_col])
+            # call the completion function
             json_resp = chat_completion(system_message, prompt)
             # parse the response
             airlines = post_process_json_response(json_resp)
             # add the airlines to the dataframe
             df.at[i, airlines_col] = airlines
             # check if the airlines are correct
-            if eval(f"list({row[test_col]})") == airlines:
-                df.at[i, "correct"] = True
         except Exception as e:
             logger.error(f"Error extracting airline names from tweet: {row[tweet_col]}")
             logger.error(f"Error: {e}")
     return df
-
-
 
 
 def few_shot_example(
@@ -382,45 +385,39 @@ def few_shot_example(
         num_examples: int = 10,
         tweet_col: str = "tweet",
         airlines_col: str = "airlines_mentioned",
-        test_col: str = "airlines",
         ):
     # load the training set
     training_df = load_training_df()
-    # get a few examples from the training set
+    # get a few _static_ examples from few-shot prompting
     fewshot_examples = training_df.sample(num_examples)
     fewshot_examples_str = fewshot_examples.to_csv(index=False)
+    # setup the result col
     df[airlines_col] = None
-    df["correct"] = False
     for i, row in df.iterrows():
         try:
             logger.info(f"line: {i + 1} tweet: {row[tweet_col]}")
-            # call the completion function
+            # grab the right prompt from the config
             system_message = config["prompts"]["few_shot"]["system"]
             prompt = config["prompts"]["few_shot"]["prompt"]
-            # df[airlines_col] = df[tweet_col].map(lambda x: )
+            # insert prompt and few-shot examples into the prompt
             prompt = prompt.format(tweet=row[tweet_col], examples=fewshot_examples_str)
+            # call the completion function
             json_resp = chat_completion(system_message, prompt)
             # parse the response
             airlines = post_process_json_response(json_resp)
             # add the airlines to the dataframe
             df.at[i, airlines_col] = airlines
-            # check if the airlines are correct
-            if eval(f"list({row[test_col]})") == airlines:
-                df.at[i, "correct"] = True
-            # if i > 50:
-            #     break
         except Exception as e:
             logger.error(f"Error extracting airline names from tweet: {row[tweet_col]}")
             logger.error(f"Error: {e}")
     return df
 
 
-def rag_few_shot_example(
+def rag_example(
         df: pd.DataFrame,
         num_examples: int = 5,
         tweet_col: str = "tweet",
         airlines_col: str = "airlines_mentioned",
-        test_col: str = "airlines",
         ):
     # load the training set
     embeddings_df = load_training_embeddings_df
@@ -429,24 +426,56 @@ def rag_few_shot_example(
     for i, row in df.iterrows():
         try:
             logger.info(f"line: {i + 1} tweet: {row[tweet_col]}")
-            # call the completion function
+            # crab the right prompt from the config
             system_message = config["prompts"]["few_shot"]["system"]
             prompt = config["prompts"]["few_shot"]["prompt"]
             # find smiliar tweets from a cosine similarity search on embeddings
             sim_tweets = embeddings_rag_search(row[tweet_col], embeddings_df, nrows=num_examples)
             examples_csv = sim_tweets[["tweet", "airlines"]].to_csv(index=False)
+            # update the prompt with tweet and RAG based examples
             prompt = prompt.format(tweet=row[tweet_col], examples=examples_csv)
+            # call the completion function
             json_resp = chat_completion(system_message, prompt)
             # parse the response
             airlines = post_process_json_response(json_resp)
             # add the airlines to the dataframe
             df.at[i, airlines_col] = airlines
-            # check if the airlines are correct
-            if eval(f"list({row[test_col]})") == airlines:
-                df.at[i, "correct"] = True
         except Exception as e:
             logger.error(f"Error extracting airline names from tweet: {row[tweet_col]}")
             logger.error(f"Error: {e}")
+    return df
+
+
+def finetuning_example(
+        df: pd.DataFrame,
+        tweet_col: str = "tweet",
+        airlines_col: str = "airlines_mentioned",
+        ):
+    # load the fine-tuned model
+    fine_tuned_model = config.get("openai", {}).get("pre_fine_tuned_model", None)
+    # check if the fine-tuned model exists
+    if fine_tuned_model is None:
+        logger.error("Fine-tuned model not found.")
+        logger.info("Please run the `fine_tune_model_jobrun` function to fine-tune a model.")
+        raise FileNotFoundError("Fine-tuned model not found.")
+    # 
+    df[airlines_col] = None
+    for i, row in df.iterrows():
+        try:
+            logger.info(f"line: {i + 1} tweet: {row[tweet_col]}")
+            # call the completion function
+            system_message = config["prompts"]["fine_tuning"]["system"]
+            prompt = config["prompts"]["fine_tuning"]["prompt"]
+            prompt = prompt.format(tweet=row[tweet_col])
+            json_resp = chat_completion(system_message, prompt, model=fine_tuned_model)
+            # parse the response
+            airlines = post_process_json_response(json_resp)
+            # add the airlines to the dataframe
+            df.at[i, airlines_col] = airlines
+        except Exception as e:
+            logger.error(f"Error extracting airline names from tweet: {row[tweet_col]}")
+            logger.error(f"Error: {e}")
+    # return the dataframe
     return df
 
 
@@ -461,7 +490,7 @@ def fine_tune_model_jobrun():
         logger.info("This will take a few minutes to complete.")
 
         # load the training set file
-        training_file = config["files"]["training_file"]
+        training_file = config.get("files", {}).get("training_file", DEFAULT_TRAINING_FILEPATH)
         logger.info(f"Loading training set from file: {training_file}")
         df = pd.read_csv(
             training_file,
@@ -474,7 +503,7 @@ def fine_tune_model_jobrun():
             )
         
         # generate an ndjson file for training
-        ft_filename = config["files"]["fine_tune_file"]
+        ft_filename = config.get("files", {}).get("fine_tuning_file", DEFAULT_FINE_TUNING_FILEPATH)
         logger.info(f"Generating fine-tuning ndjson file: {ft_filename}")
         with open(ft_filename, "w") as file:
             for i, row in df.iterrows():
@@ -497,7 +526,7 @@ def fine_tune_model_jobrun():
 
         # run a fine-tuning job
         logger.info(f"Submitting a fine-tuning job on file: {ft_filename}")
-        ft_model = config.get("openai", {}).get("fine_tune_model", "gpt-3.5-turbo")
+        ft_model = config.get("openai", {}).get("fine_tuning_model", "gpt-3.5-turbo-0125")
         job = client.fine_tuning.jobs.create(
             model=ft_model,
             training_file=file_obj.id,
@@ -510,11 +539,10 @@ def fine_tune_model_jobrun():
             job = client.fine_tuning.jobs.retrieve(job.id)
             logger.info(f"Checking fine-tuning job status: {job.status}")
         logger.info(f"Fine-tuning job completed. Model name: {job.fine_tuned_model}")
-
-        
     except Exception as e:
         logger.error(f"Fine-tuning job failed! Error: {e}")
         raise e
+
 
 
 def main():
@@ -536,9 +564,58 @@ def test_similirity_search():
     print(similar_tweets)
 
 
-def test_fine_tune_model_job():
+def test_fine_tune_model_jobrun():
     fine_tune_model_jobrun()
 
+
+def test_zero_shot_example():
+    # load the test file
+    test_file = config.get("files", {}).get("test_file", None)
+    df = load_training_df(training_file=test_file)
+    # sample a few rows
+    df = df.sample(10)
+    # run the zero-shot example
+    df = zero_shot_example(df)
+    # print the results
+    print(df)
+
+
+def test_few_shot_example():
+    # load the test file
+    test_file = config.get("files", {}).get("test_file", None)
+    df = load_training_df(training_file=test_file)
+    # sample a few rows
+    df = df.sample(10)
+    # run the few-shot example
+    num_examples = 20
+    df = few_shot_example(df, num_examples)
+    # print the results
+    print(df)
+
+
+def test_rag_example():
+    # load the test file
+    test_file = config.get("files", {}).get("test_file", None)
+    df = load_training_df(training_file=test_file)
+    # sample a few rows
+    df = df.sample(10)
+    # run the few-shot example
+    num_examples = 10
+    df = rag_example(df, num_examples)
+    # print the results
+    print(df)
+
+
+def test_finetuned_example():
+    # load the test file
+    test_file = config.get("files", {}).get("test_file", None)
+    df = load_training_df(training_file=test_file)
+    # sample a few rows
+    df = df.sample(10)
+    # run the few-shot example
+    df = finetuning_example(df)
+    # print the results
+    print(df)
 
 
 # ========================================
@@ -548,4 +625,8 @@ def test_fine_tune_model_job():
 if __name__ == '__main__':
     # main()
     test_similirity_search()
-    # test_fine_tune_model_job()
+    # test_fine_tune_model_jobrun()
+    # test_finetuned_example()
+    # test_zero_shot_example()
+    # test_few_shot_example()
+    # test_rag_example()

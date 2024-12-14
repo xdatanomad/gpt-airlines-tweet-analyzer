@@ -1,20 +1,27 @@
 
+# ========================================
+# DATA FILES
+#
+# **NOTE**: Please create a `data` directory and place the following files in it:
+# ========================================
 files:
   # Path to the training data file
   training_file: data/airline_train.csv
   test_file: data/airline_test.csv
   training_embeddings_file: data/airline_embeddings.parquet
   fine_tuning_file: data/airline_fine_tune.jsonl
+  output_file: data/airline_output.csv
 
-# OpenAI Configuration
+# ========================================
+# OPENAI CONFIG
+#
+# **NOTE**: Please don't forget to set OPENAI_API_KEY environment variable
+# ========================================
 openai:
-  # There are two ways to set your API key:
-  # 1. Set it here in the config file
-  # 2. Set it as an environment variable named OPENAI_API_KEY
-  api_key:
   model: gpt-3.5-turbo
   embedding_model: text-embedding-3-small
-  fine_tune_model: gpt-3.5-turbo-0125
+  fine_tuning_model: gpt-3.5-turbo-0125
+  pre_fine_tuned_model: ft:gpt-3.5-turbo-0125:openai-candidate::AeGUzz8x
   # max_tokens: 160000
   # max_prompt_tokens: 8000
   temperature: 0.0
@@ -22,25 +29,28 @@ openai:
   frequency_penalty: 0.0
   presence_penalty: 0.0
 
+
 # ========================================
 # PROMPTS
 # ========================================
-# prompts used by the app
+
 prompts:
-  # 1: ZERO-SHOT PROMPT
+
   # -----------------------------------
+  # 1: ZERO-SHOT PROMPT
   # Uage:
   #  - zero-shot prompt wihtout any context or examples from training set
   #  - stock gpt-3.5-turbo model. Not fine-tuned or trained
   # 
   # Commentary:
   # - This prompt is expected to have a lower accuracy as it is not fine-tuned or trained on any specific task or domain.
+  # -----------------------------------
   zero_shot:
     system: You are an expert in identifying airlines mentioned in tweets. 
     prompt: |
       Your task is to take a given tweet and return a list of all airlines referenced, regardless of how they are named or spelled. 
       You have a comprehensive internal reference dictionary of airline names, aliases, abbreviations, social handles, and common misspellings. 
-      You must map any mention to the correct canonical airline name as recognized by the aviation industry (e.g., "United" → "United Airlines", "American Air" → "American Airlines").
+      Use correct canonical airline name as recognized by the aviation industry (e.g., "United" → "United Airlines", "American Air" → "American Airlines").
 
       Rules:
       - Always return the results in a JSON list format.
@@ -49,24 +59,29 @@ prompts:
       - If no airlines are mentioned, return an empty list: []
       - Never include extra commentary, only the JSON list.
 
-      Sample JSON response:
-      ```json
-      {{
-        "airlines": ["United Airlines", "JetBlue Airways"]
-      }}
-      ```
+      Sample JSON Response: `{{"airlines": ["United Airlines", "JetBlue Airways"]}}`
 
+      TASK:
       Now process this tweet:
-
-      TWEET:
       {tweet}
   
+  # -----------------------------------
+  # 2: FEW-SHOT PROMPT
+  #
+  # Usage:
+  #  - This prompt is used by both few-shot prompting and RAG methods
+  #
+  # Commentary:
+  #  - Both the RAG and few-shot prompting methods use the same prompt
+  #  - In few-shot prompting, the model uses small _static_ dataset of tweets from the training set
+  #  - In RAG, the model uses the same prompt but with dynamically loaded tweets from the training set based on a similarity score to the input tweet
+  # -----------------------------------
   few_shot:
     system: You are an expert in identifying airlines mentioned in tweets. 
     prompt: |
       Your task is to take a given tweet and return a list of all airlines referenced, regardless of how they are named or spelled. 
       You have a comprehensive internal reference dictionary of airline names, aliases, abbreviations, social handles, and common misspellings. 
-      You must map any mention to the correct canonical airline name as recognized by the aviation industry (e.g., "United" → "United Airlines", "American Air" → "American Airlines").
+      Use correct canonical airline name as recognized by the aviation industry (e.g., "United" → "United Airlines", "American Air" → "American Airlines").
 
       Rules:
       - Always return the results in a JSON list format.
@@ -75,14 +90,9 @@ prompts:
       - If no airlines are mentioned, return an empty list: []
       - Never include extra commentary, only the JSON list.
 
-      Sample JSON response:
-      ```json
-      {{
-        "airlines": ["United Airlines", "JetBlue Airways"]
-      }}
-      ```
+      Sample JSON Response: `{{"airlines": ["United Airlines", "JetBlue Airways"]}}`
 
-      I am now providing sample tweets and identified airline names as a CSV. Please use these examples to improve your accuracy.
+      Example tweets and identified airline names (in CSV format) to improve your accuracy.
       Examples:
       ---------
       {examples}
@@ -90,121 +100,25 @@ prompts:
 
       TASK:
       Now process this tweet:
-
-      TWEET:
       {tweet}
-  # 2: FEW-SHOT PROMPT
-  airline_name_mapping:
-    system: You are an expert in building a reference dictionary of airline names to their aliases that would help identify them in tweets.
-    # prompt: |
-    #   Please help build a mapping dictionary that helps identify airline names and aliases in tweets.
-    #   I am providing you with a training set of tweets. Each line of DATA contains a tweet and a list of CORRECTLY IDENTIFIED airline name in the same tweet.
-    #   I like you to build a dictionary of keywords, airline names, aliases, abbreviations, @ handles, or any other text in the tweet that resulted in airline name mapping in tweets.
-    #   The dictionary should map airline names to their aliases from the DATA.
-    #   The response should be stored as a JSON object.
 
-    #   EXAMPLE
-    #   -------
-    #   SouthwestAir bags fly free..just not to where you're going.,['Southwest Airlines']
-    #   "@AmericanAir I need help with a reservation purchased on @AmericanAir but operated on @USAirways, can't get through on the 800#","['American Airlines', 'US Airways']"
-    #   Jet Blue I don't know- no one would tell me where they were coming from - I would guess so as that's where we had all the changes to flights,['JetBlue Airways']
-    #   US Air FUK U US AIRWAYS WITH YO SHITTY CHICKEN SALAD SANDWICH THAT SO OVERPRICED AND U FUKING MAKE ME WAIT IN A 6 HR LAYOVER FUK U AND,['US Airways']
-    #   @united $55 cab ride to dfw from love got me my bag. Reimburse?,['United Airlines']
-    #   AA you're not finding it bc @united  rebooked us on your airline when they realized they couldn't get us home - and we're at ORD,"['United Airlines', 'American Airlines']"
-    #   "Virgin Am I rang, but there is a wait for 35 minutes!! I can book the same ticket through a vendor, fix your site",['Virgin America']
-    #   "DL I'm trying to book a flight on your website and it's not working.",['Delta Air Lines']
-
-    #   The sample response:
-    #   {{
-    #     "American Airlines": ["@AmericanAir", "AA"],
-    #     "Delta Air Lines": ["DL"],
-    #     "Southwest Airlines": ["SouthwestAir", ]
-    #     "US Airways": ["@USAirways", "US Air"],
-    #     "United Airlines": ["@united"],
-    #     "Jet Blue Airways": ["Jet Blue"],
-    #     "Virgin America": ["Virgin Am"]
-    #   }}
-
-    #   IMPORTANT INSTRUCTIONS:
-    #   -----------------------
-    #   1. Ensure the response is in JSON format.
-    #   2. Ensure JSON format follows the example above.
-    #   3. Ensure to map all the aliases and abbreviations for each airline into a single key.
-    #   4. It is NOT important that the dictionary is sorted or in order.
-    #   5. It is VERY important that the dictionary is a complete and unique mapping of airline names to their aliases derived only from the DATA below.
-
-    #   NOW, please process these DATA lines:
-
-    #   DATA:
-    #   =====
-    #   {data}
+  # -----------------------------------
+  # 3: FINE-TUNING PROMPT
+  #
+  # Usage:
+  #  - This prompt is used in conjunction with a pre-finetuned model on the airline identification task
+  #  - The model is trained on the training set
+  #  - This module should perform similar (or better) to few-shot prompting AND use less tokens
+  # ------------------------------------
+  fine_tuning:
+    system: You are an expert in identifying airlines mentioned in tweets in JSON format. 
     prompt: |
-      You are an expert at building comprehensive reference dictionaries of airline names and their aliases. 
-      Your goal is to identify accurate variant, abbreviation, nickname, or social handle that could appear in a tweet and map it back to the correct airline. 
-      I like you to build a dictionary of keywords, airline names, aliases, abbreviations, @ handles, or any other text in the tweet that resulted in airline name mapping in tweets. 
-      Your dictionary should ensure 100% accurate identification.
-      I am providing you with a series pre-identified training set tweets. 
-      Each line of DATA contains a tweet and a list of CORRECTLY IDENTIFIED airline name in the same tweet. Each line already includes the correct mapping.
-      The dictionary should be derived from the DATA (below).
-      The dictionary should be case-insensitive.
-      The response should be stored as a JSON object.
+      Respond in a JSON. What airlines are mentioned in this tweet: {tweet}
 
-      EXAMPLE
-      -------
-      The sample response:
-      {{
-        "American Airlines": ["@AmericanAir", "AA"],
-        "Southwest Airlines": ["SouthwestAir", "@SouthwestAir"]
-        "Delta Air Lines": ["@Delta", "Delta Air"],
-      }}
 
-      Additional Instructions:
-      -----------------------
-      1. Ensure the response is in JSON format.
-      2. Ensure JSON format follows the example above.
-      3. Ensure to map all the aliases and abbreviations for each airline into a single key.
-      4. It is NOT important that the dictionary is sorted or in order.
-
-      NOW, please process these DATA lines:
-
-      DATA:
-      =====
-      {data}
-    top_p: 0.0
-    frequency_penalty: 0.0
-    presence_penalty: 0.0
-
-  airline_name_mapping_post_process:
-    system: Extend a dictionary of airline names and their aliases.
-    prompt: |
-      I am providing you with a dictionary of airline names and their aliases. E
-      Each key in the dictionary is an airline name, and the value is a list of aliases, social media handles, abbreviations, or keywords used to identify the airline in a tweet.
-      The response should be stored as a JSON object.
-
-      ASK:
-      ----
-      1. Extend this dictionary with additional missing aliases.
-      2. Extend with only the most common aliases. Response must include all provided aliases and EXTEND it with additional aliases.
-      3. Include missing United States airlines only and their aliases.
-      4. Include all known Twitter handles for each airline.
-      5. The response should be stored as a JSON object.
-      6. Follow the same format of the JSON diconary provided below.
-
-      AIRLINE NAME MAPPING DICTIONARY:
-      -------
-      {data}
-  build_prompt_2: |
-    The following is a conversation with an AI assistant. The assistant is helpful, creative, clever, and very friendly.
-
-    Human: Hello, who are you?
-    AI: I am an AI assistant. How can I help you today?
-    Human: What is your name?
-    AI: My name is Assistant.
-    Human: What can you do for me?
-    AI: I can help you with a variety of tasks, such as answering questions, providing information, and assisting with research.
-    Human: Can you tell me a joke?
-    AI: Sure! Why did the scarecrow win an award? Because he was outstanding in his field!
-    Human: That's funny! Can you tell me another joke?
-    AI: Of course! Why did the math book look sad? Because it had too many problems.
-    Human: Haha! You're good at telling jokes.
-    AI: Thank you! I'm glad you enjoyed them. Is there anything else I can help you with?
+# Sample JSON response:
+# ```json
+# {{
+#   "airlines": ["United Airlines", "JetBlue Airways"]
+# }}
+# ```
