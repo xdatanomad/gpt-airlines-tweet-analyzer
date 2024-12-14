@@ -85,17 +85,20 @@ DEFAULT_FINE_TUNING_FILEPATH = "data/airline_fine_tune.jsonl"                   
 class ApplicationRunStatistics:
     def __init__(
             self,
-            action: str = "Generic",
+            action: str = "Generic",            # metadata column
+            description: str = "",              # metadata column
             ):
         # generate a short id for the run
         self.run_id = f"run-{datetime.now().strftime("%Y%m%d-%H%M%S")}"
         self.start_time = time.time()
         self.end_time = None
+        self.elapsed_time = 0
         self.action = action
+        self.description = description
         # capture command line arguments
         self.cmdline_args = sys.argv[1:]
         # tokens uages
-        self.tokens_uages = {
+        self.tokens_usage = {
             "prompt": 0,
             "response": 0,
             "embeddings": 0,
@@ -113,9 +116,9 @@ class ApplicationRunStatistics:
         try:
             self.openai_calls["chat_completion"] += 1
             self.openai_calls["chat_completion_runtime"] += runtime
-            self.tokens_uages["prompt"] += resp.usage.prompt_tokens
-            self.tokens_uages["response"] += resp.usage.completion_tokens
-            self.tokens_uages["total"] += resp.usage.total_tokens
+            self.tokens_usage["prompt"] += resp.usage.prompt_tokens
+            self.tokens_usage["response"] += resp.usage.completion_tokens
+            self.tokens_usage["total"] += resp.usage.total_tokens
             if log:
                 logger.debug(f"ChatCompletion Stats: runtime={runtime:.3f}s, prompt_tokens={resp.usage.prompt_tokens}, response_tokens={resp.usage.completion_tokens}, total_tokens={resp.usage.total_tokens}")
         except Exception as e:
@@ -125,7 +128,8 @@ class ApplicationRunStatistics:
         try:
             self.openai_calls["embeddings"] += 1
             self.openai_calls["embeddings_runtime"] += runtime
-            self.openai_calls["embeddings"] += resp.usage.total_tokens
+            self.tokens_usage["embeddings"] += resp.usage.total_tokens
+            self.tokens_usage["total"] += resp.usage.total_tokens
             if log:
                 logger.debug(f"Embeddings Stats: runtime={runtime:.3f}s, total_tokens={resp.usage.total_tokens}")
         except Exception as e:
@@ -133,6 +137,26 @@ class ApplicationRunStatistics:
 
     def check_results():
         pass
+
+    def print_stats(self):
+        self.end_time = time.time()
+        self.elapsed_time = self.end_time - self.start_time
+        logger.info(f"Run ID: {self.run_id}")
+        logger.info(f"Action: {self.action}")
+        logger.info(f"Run Time: {self.elapsed_time:.3f}s")
+        logger.info(f"OpenAI API Calls:")
+        logger.info(f"  Chat Completions: {self.openai_calls['chat_completion']}")
+        logger.info(f"  Chat Completions Runtime: {self.openai_calls['chat_completion_runtime']:.3f}s")
+        logger.info(f"  Embeddings: {self.openai_calls['embeddings']}")
+        logger.info(f"  Embeddings Runtime: {self.openai_calls['embeddings_runtime']:.3f}s")
+        logger.info(f"Token Usage:")
+        logger.info(f"  Prompt Tokens: {self.tokens_usage['prompt']}")
+        logger.info(f"  Response Tokens: {self.tokens_usage['response']}")
+        logger.info(f"  Embeddings Tokens: {self.tokens_usage['embeddings']}")
+        logger.info(f"  Total Tokens: {self.tokens_usage['total']}")
+
+    def __str__(self):
+        return f"Run ID: {self.run_id}, Action: {self.action}, Elapsed Time: {self.elapsed_time:.3f}s"
         
 
 # Define a global object to store application run statistics
@@ -257,19 +281,19 @@ def post_process_json_response(response: dict) -> list:
     raise ValueError("Invalid response JSON format. No list of airlines found.")
 
 
-def load_training_df(
-        training_file: str = None,                     # path to the training file
+def read_tweets_to_dataframe(
+        filepath: str = None,                     # path to the training file
         ) -> pd.DataFrame:
     
     # get the training file name form the config if not set
-    if training_file is None:
-        training_file = config.get("files", {}).get("training_file", DEFAULT_TRAINING_FILEPATH)
+    if filepath is None:
+        filepath = config.get("files", {}).get("training_file", DEFAULT_TRAINING_FILEPATH)
     # read the training file CSV
     # please note:
     #   - airlines column is parsed as a list
     #   - badlines and encoding errors are skipped
     df = pd.read_csv(
-        training_file,
+        filepath,
         skip_blank_lines=True,
         skipinitialspace=True,
         encoding_errors='ignore',                   # accounting for utf encoding errors
@@ -281,26 +305,26 @@ def load_training_df(
     if not all([isinstance(x, list) for x in df["airlines"]]):
         logger.error(f"airlines column is not a list of strings")
         raise ValueError(f"airlines column is not a list of strings")
-    logger.info(f"Loaded training set from file: {training_file}")
+    logger.info(f"Loaded training set from file: {filepath}")
     # return the training dataframe
     return df
 
 
-def load_training_embeddings_df(
-        training_embeddings_file: str = None,                     # path to the training file
+def read_tweets_embeddings_to_dataframe(
+        filepath: str = None,                     # path to the training file
         ) -> pd.DataFrame:
     
     # get the training file name form the config if not set
-    if training_embeddings_file is None:
-        training_embeddings_file = config.get("files", {}).get("training_embeddings_file", DEFAULT_TRAINING_EMBEDDINGS_FILEPATH)
+    if filepath is None:
+        filepath = config.get("files", {}).get("training_embeddings_file", DEFAULT_TRAINING_EMBEDDINGS_FILEPATH)
     # if the file doesn't exist, throw a message with instructions to compute the embeddings
-    if not os.path.exists(training_embeddings_file):
-        logger.error(f"Training embeddings file not found: {training_embeddings_file}")
+    if not os.path.exists(filepath):
+        logger.error(f"Training embeddings file not found: {filepath}")
         logger.info(f"Please run the `compute_and_save_embeddings_for_training_set` function to compute the embeddings.")
-        raise FileNotFoundError(f"Training embeddings file not found: {training_embeddings_file}")
+        raise FileNotFoundError(f"Training embeddings file not found: {filepath}")
     # read the embeddings parquet file
-    df = pd.read_parquet(training_embeddings_file)
-    logger.info(f"Loaded training set with embeddings from file: {training_embeddings_file}")
+    df = pd.read_parquet(filepath)
+    logger.info(f"Loaded training set with embeddings from file: {filepath}")
     # return the training dataframe with embeddings
     return df
 
@@ -343,7 +367,7 @@ def compute_and_save_embeddings_for_training_set(
     logger.info("This will take a while! Go grab a coffee :)")
 
     # load the training file
-    df = load_training_df(training_file)
+    df = read_tweets_to_dataframe(training_file)
     # calculate embeddings for the tweets column
     df["tweet_embeddings"] = df["tweet"].map(get_embeddings)
     # save the embeddings to a parquet file
@@ -387,7 +411,7 @@ def few_shot_example(
         airlines_col: str = "airlines_mentioned",
         ):
     # load the training set
-    training_df = load_training_df()
+    training_df = read_tweets_to_dataframe()
     # get a few _static_ examples from few-shot prompting
     fewshot_examples = training_df.sample(num_examples)
     fewshot_examples_str = fewshot_examples.to_csv(index=False)
@@ -420,9 +444,8 @@ def rag_example(
         airlines_col: str = "airlines_mentioned",
         ):
     # load the training set
-    embeddings_df = load_training_embeddings_df
+    embeddings_df = read_tweets_embeddings_to_dataframe()
     df[airlines_col] = None
-    df["correct"] = False
     for i, row in df.iterrows():
         try:
             logger.info(f"line: {i + 1} tweet: {row[tweet_col]}")
@@ -538,7 +561,9 @@ def fine_tune_model_jobrun():
             time.sleep(5)
             job = client.fine_tuning.jobs.retrieve(job.id)
             logger.info(f"Checking fine-tuning job status: {job.status}")
-        logger.info(f"Fine-tuning job completed. Model name: {job.fine_tuned_model}")
+        fine_tuned_model = job.fine_tuned_model
+        logger.info(f"Fine-tuning job completed. Model name: {fine_tuned_model}")
+        logger.info(f"PLEASE update the YAML config file with the new fine-tuned model name: {fine_tuned_model}")
     except Exception as e:
         logger.error(f"Fine-tuning job failed! Error: {e}")
         raise e
@@ -557,7 +582,7 @@ def main():
 
 def test_similirity_search():
     # load the training set
-    embeddings_df = load_training_embeddings_df()
+    embeddings_df = read_tweets_embeddings_to_dataframe()
     print(embeddings_df)
     tweet = r"US Airways i tried it but doesnt help very much and Reservation seems to be overwhelmed with some issues"
     similar_tweets = embeddings_rag_search(tweet, embeddings_df)
@@ -571,19 +596,20 @@ def test_fine_tune_model_jobrun():
 def test_zero_shot_example():
     # load the test file
     test_file = config.get("files", {}).get("test_file", None)
-    df = load_training_df(training_file=test_file)
+    df = read_tweets_to_dataframe(filepath=test_file)
     # sample a few rows
     df = df.sample(10)
     # run the zero-shot example
     df = zero_shot_example(df)
     # print the results
     print(df)
+    job_run.print_stats()
 
 
 def test_few_shot_example():
     # load the test file
     test_file = config.get("files", {}).get("test_file", None)
-    df = load_training_df(training_file=test_file)
+    df = read_tweets_to_dataframe(filepath=test_file)
     # sample a few rows
     df = df.sample(10)
     # run the few-shot example
@@ -591,12 +617,14 @@ def test_few_shot_example():
     df = few_shot_example(df, num_examples)
     # print the results
     print(df)
+    job_run.print_stats()
+
 
 
 def test_rag_example():
     # load the test file
     test_file = config.get("files", {}).get("test_file", None)
-    df = load_training_df(training_file=test_file)
+    df = read_tweets_to_dataframe(filepath=test_file)
     # sample a few rows
     df = df.sample(10)
     # run the few-shot example
@@ -604,18 +632,20 @@ def test_rag_example():
     df = rag_example(df, num_examples)
     # print the results
     print(df)
+    job_run.print_stats()
 
 
 def test_finetuned_example():
     # load the test file
     test_file = config.get("files", {}).get("test_file", None)
-    df = load_training_df(training_file=test_file)
+    df = read_tweets_to_dataframe(filepath=test_file)
     # sample a few rows
     df = df.sample(10)
     # run the few-shot example
     df = finetuning_example(df)
     # print the results
     print(df)
+    job_run.print_stats()
 
 
 # ========================================
@@ -624,9 +654,9 @@ def test_finetuned_example():
 
 if __name__ == '__main__':
     # main()
-    test_similirity_search()
+    # test_similirity_search()
     # test_fine_tune_model_jobrun()
-    # test_finetuned_example()
     # test_zero_shot_example()
-    # test_few_shot_example()
+    test_few_shot_example()
     # test_rag_example()
+    # test_finetuned_example()
