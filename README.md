@@ -1,16 +1,13 @@
 # Code and Setup Instructions for Extracting Airline Names from Tweets
 
 As promised, I’ve put together a solution that extracts airline names from tweets, along with several methods to boost accuracy. The attached main.py script demonstrates four approaches:
-	1.	Zero-shot Prompting:
-Uses GPT-3.5-turbo directly (no examples) to identify airlines. It’s fast but less accurate.
-	2.	Few-shot Prompting:
-Provides a handful of examples from the training set to improve accuracy. More tokens are used, but results are better than zero-shot.
-	3.	RAG + Few-shot Prompting:
-Dynamically chooses examples similar to the incoming tweet (via embeddings), improving accuracy even more. Requires pre-computing and storing embeddings but yields great results.
-	4.	Fine-tuned Model:
-The most accurate approach. We train a custom model on the entire dataset. Once fine-tuned, it’s highly reliable but involves extra steps and time upfront.
 
-###  Execuive Summary of the Results
+1. **Zero-shot Prompting:** Uses GPT-3.5-turbo directly (no examples) to identify airlines. It’s fast but less accurate.
+2. **Few-shot Prompting:** Provides a handful of _static_ examples from the training set to improve accuracy. More tokens are used, but results are better than zero-shot.
+3. **RAG + Few-shot Prompting:** _Dynamically_ chooses examples similar to the incoming tweet (via embeddings), improving accuracy even more since examples are optimally-picked by the algorithm per tweet. Requires pre-computing and storing embeddings but yields great results.
+4. **Fine-tuned Model:** The most accurate approach. We train a custom model on the entire dataset. Once fine-tuned, it’s highly reliable but involves a few extra steps and time upfront to train the model. The result is a reusable fine-tuned airline recognizer model.
+
+###  Executive Summary of the Results
 
 Results at a Glance (on the test set `airlines_test.csv`):
 
@@ -104,8 +101,8 @@ Other optimization is to combine the RAG and fine-tuning methods -- best of both
 I hope this helps you get started. Please let me know if you have any questions or need help with anything.
 
 In conclusion:
-- fine_tuning is the most accurate AND takes least number of tokens... but takes a bit longer to run and finetuning tokens cost a bit more which is something to consider.
-- RAG is the next best thing. It's accurate while using moderate amount of tokens... but we need to batch the embeddings calls to make it more efficient.
+- fine_tuning is the most accurate AND takes the least number of tokens... but takes a bit longer to run and fine tuning tokens cost a bit more which is something to consider.
+- RAG is the next best thing. It's accurate while using a moderate amount of tokens... but we need to batch the embedding calls to make it more efficient.
 
 ## tl;dr: Going over the Code
 
