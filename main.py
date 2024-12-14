@@ -12,6 +12,7 @@ from scipy import spatial
 import click
 from openai import OpenAI
 
+
 # ========================================
 # SETTING UP LOGGING AND APPLICATION CONFIGURATION
 #
@@ -26,6 +27,24 @@ DEFAULT_CONFIG_FILE = "config.yaml"
 
 # Setup logging
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
+    """
+    Sets up logging for the application.
+
+    This function configures a logger with both console and file handlers. The console handler logs messages to the console, 
+    while the file handler logs messages to a file with rotation based on size.
+
+    Args:
+        log_level (str): The logging level for the console handler. Defaults to "INFO". 
+                         Valid levels are "DEBUG", "INFO", "WARNING", "ERROR", and "CRITICAL".
+
+    Returns:
+        logging.Logger: Configured logger instance.
+
+    Example:
+        logger = setup_logging("DEBUG")
+        logger.info("This is an info message")
+        logger.debug("This is a debug message")
+    """
     logger = logging.getLogger('main')
     level = getattr(logging, log_level.upper(), logging.INFO)
     logger.setLevel(level)
@@ -53,6 +72,17 @@ def load_config(
         config_file: str = DEFAULT_CONFIG_FILE, 
         default_configs: dict = {}
         ) -> dict:
+    """
+    Loads configuration from a specified YAML file and updates the default configurations.
+    Args:
+        config_file (str): The path to the configuration file. Defaults to DEFAULT_CONFIG_FILE.
+        default_configs (dict): A dictionary containing default configurations. Defaults to an empty dictionary.
+    Returns:
+        dict: The updated configuration dictionary.
+    Raises:
+        FileNotFoundError: If the specified configuration file is not found.
+        Exception: If there is an error reading the configuration file.
+    """
     try:
         with open(config_file, "r") as file:
             default_configs.update(yaml.safe_load(file))
@@ -84,6 +114,31 @@ DEFAULT_FINE_TUNING_FILEPATH = "data/airline_fine_tune.jsonl"                   
 
 
 class ApplicationRunStatistics:
+    """
+    A class to track and log the statistics of an application's run, including OpenAI API call statistics and token usage.
+    Attributes:
+        run_id (str): A unique identifier for the run, generated based on the current datetime.
+        start_time (float): The start time of the run.
+        end_time (float): The end time of the run.
+        elapsed_time (float): The total elapsed time of the run.
+        action (str): The action being performed during the run.
+        description (str): A description of the run.
+        cmdline_args (list): The command line arguments passed to the script.
+        tokens_usage (dict): A dictionary to track the usage of tokens for prompt, response, embeddings, and total.
+        openai_calls (dict): A dictionary to track the number and runtime of OpenAI API calls for chat completions and embeddings.
+    Methods:
+        update_chat_completion_stats(resp, runtime=0, log=False):
+            Updates the statistics for chat completion API calls, including token usage and runtime.
+        update_embeddings_stats(resp, runtime=0, log=False):
+            Updates the statistics for embeddings API calls, including token usage and runtime.
+        check_results():
+            Placeholder method to check results (implementation not provided).
+        print_stats():
+            Logs the statistics of the run, including run ID, action, elapsed time, OpenAI API call statistics, and token usage.
+        __str__():
+            Returns a string representation of the run statistics.
+    """
+
     def __init__(
             self,
             action: str = "Generic",            # metadata column
@@ -114,6 +169,15 @@ class ApplicationRunStatistics:
         }
 
     def update_chat_completion_stats(self, resp, runtime: float = 0, log: bool = False):
+        """
+        Updates the statistics for chat completion calls to the OpenAI API.
+        Args:
+            resp: The response object from the OpenAI API call, which contains token usage information.
+            runtime (float, optional): The runtime of the chat completion call in seconds. Defaults to 0.
+            log (bool, optional): If True, logs the updated statistics. Defaults to False.
+        Raises:
+            Exception: Catches and passes any exception that occurs during the update process.
+        """
         try:
             self.openai_calls["chat_completion"] += 1
             self.openai_calls["chat_completion_runtime"] += runtime
@@ -126,6 +190,15 @@ class ApplicationRunStatistics:
             pass
 
     def update_embeddings_stats(self, resp, runtime: float = 0, log: bool = False):
+        """
+        Updates the statistics related to embeddings based on the response from the OpenAI API.
+        Args:
+            resp: The response object from the OpenAI API containing usage information.
+            runtime (float, optional): The time taken to get the embeddings. Defaults to 0.
+            log (bool, optional): If True, logs the embeddings statistics. Defaults to False.
+        Raises:
+            Exception: Catches all exceptions to prevent the function from failing.
+        """
         try:
             self.openai_calls["embeddings"] += 1
             self.openai_calls["embeddings_runtime"] += runtime
@@ -140,6 +213,10 @@ class ApplicationRunStatistics:
         pass
 
     def print_stats(self):
+        """
+        Prints the statistics of the current run including run ID, action, elapsed time,
+        OpenAI API calls, and token usage.
+        """
         self.end_time = time.time()
         self.elapsed_time = self.end_time - self.start_time
         logger.info(f"Run ID: {self.run_id}")
@@ -190,6 +267,22 @@ def chat_completion(
         model: str = None,                      # model name
         temperature: float = None,              # temperature parameter
         ) -> dict:
+    """
+    Generates a chat completion response using the OpenAI API.
+
+    Args:
+        system_message (str): The system message to set the context for the chat.
+        prompt (str): The user message or prompt to generate a response for.
+        model (str, optional): The model name to use for the chat completion. Defaults to gpt-3.5-turbo.
+        temperature (float, optional): The temperature parameter to control the randomness of the response. Defaults to 0.
+
+    Returns:
+        dict: The response from the OpenAI API in JSON format.
+
+    Raises:
+        json.JSONDecodeError: If the response from the API is not valid JSON.
+        Exception: For any other errors that occur during the API call.
+    """
     try:
         # Get the model configiration
         if model is None:
@@ -242,6 +335,15 @@ def chat_completion(
 def get_embeddings(
         text: str,                              # text to get embeddings for
         ) -> list:
+    """
+    Generate embeddings for a given text using the specified model by config file.
+
+    Args:
+        text (str): The text to generate embeddings for.
+
+    Returns:
+        list: A list representing the embeddings of the input text.
+    """
     # Time the call
     start_time = time.time()
     # Get the encoding for the specified model
@@ -263,6 +365,25 @@ def get_embeddings(
 # ========================================
 
 def post_process_json_response(response: dict) -> list:
+    """
+    Processes a JSON response to extract a list of airlines. Its main purpose is to handle different JSON response formats form the model.
+
+    This function handles different formats of the JSON response:
+    - If the response is already a list, it returns the list.
+    - If the response is a dictionary, it checks for known keys ("airlines" or "airlines_mentioned")
+      that contain a list and returns the corresponding list.
+    - If none of the known keys are found, it returns the first key that holds a list.
+    - If no list is found, it logs a warning and raises a ValueError.
+
+    Args:
+        response (dict): The JSON response to process.
+
+    Returns:
+        list: A list of airlines extracted from the response.
+
+    Raises:
+        ValueError: If the response does not contain a list of airlines.
+    """
     # if the response if already a list, return it
     if isinstance(response, list):
         return response
@@ -282,10 +403,21 @@ def post_process_json_response(response: dict) -> list:
     raise ValueError("Invalid response JSON format. No list of airlines found.")
 
 
-def read_tweets_to_dataframe(
-        filepath: str = None,                     # path to the training file
-        ) -> pd.DataFrame:
-    
+def read_tweets_to_dataframe(filepath: str = None) -> pd.DataFrame:
+    """
+    Reads tweets from a CSV file into a pandas DataFrame.
+    Args:
+        filepath (str, optional): The path to the CSV file containing the tweets. 
+                                  If not provided, the path is retrieved from the config.
+    Returns:
+        pd.DataFrame: A DataFrame containing the tweets and their associated airlines.
+    Raises:
+        ValueError: If the 'airlines' column is not parsed as a list of strings.
+    Notes:
+        - The 'airlines' column is parsed as a list.
+        - Bad lines and encoding errors in the CSV file are skipped.
+        - The DataFrame is expected to have 'tweet' and 'airlines' columns.
+    """
     # get the training file name form the config if not set
     if filepath is None:
         filepath = config.get("files", {}).get("training_file", DEFAULT_TRAINING_FILEPATH)
@@ -311,10 +443,24 @@ def read_tweets_to_dataframe(
     return df
 
 
-def read_tweets_embeddings_to_dataframe(
-        filepath: str = None,                     # path to the training file
-        ) -> pd.DataFrame:
+def read_tweets_embeddings_to_dataframe(filepath: str = None) -> pd.DataFrame:
+    """
+    Reads tweet embeddings from a parquet file and loads them into a pandas DataFrame.
+    Args:
+    filepath (str, optional): The path to the training embeddings file. If not provided, 
+                    the path will be retrieved from the configuration.
     
+    Returns:
+    pd.DataFrame: A DataFrame containing the tweet embeddings.
+    
+    aises:
+    FileNotFoundError: If the specified embeddings file does not exist.
+    
+    Notes:
+        - If the `filepath` is not provided, it will be fetched from the configuration using the key 
+            "training_embeddings_file".
+        - The embeddings file is expected to be in parquet format.
+    """
     # get the training file name form the config if not set
     if filepath is None:
         filepath = config.get("files", {}).get("training_embeddings_file", DEFAULT_TRAINING_EMBEDDINGS_FILEPATH)
@@ -336,6 +482,21 @@ def embeddings_rag_search(
         nrows: int = 5,                             # number of similiar tweets to return
         embeddings_col: str = "tweet_embeddings",   # column name for the embeddings
         ) -> pd.DataFrame:
+    """
+    Find similar tweets based on embeddings using cosine similarity. This method is used in the RAG method.
+
+    Args:
+    tweet (str): The tweet to find similar tweets for.
+    training_df (pd.DataFrame): The training dataframe containing tweet embeddings.
+    nrows (int, optional): The number of similar tweets to return. Defaults to 5.
+    embeddings_col (str, optional): The column name for the embeddings in the dataframe. Defaults to "tweet_embeddings".
+
+    Returns:
+    pd.DataFrame: A dataframe containing the top `nrows` similar tweets based on cosine similarity.
+
+    Raises:
+    Exception: If there is an error in calculating the similarities or processing the embeddings.
+    """
     try:
         # get the embeddings for the tweet
         tweet_embeddings = get_embeddings(tweet)
@@ -366,7 +527,14 @@ def embeddings_rag_search(
 def build_rag_embeddings_db(
         training_file: str = None,                     # path to the training file
         ) -> None:
+    """
+    Computes and caches embeddings for the training set.
+    This function reads a training file containing tweets, computes embeddings
+    for each tweet, and saves the embeddings to a parquet file for future use.
     
+    Args:
+    training_file (str, optional): Path to the training file containing tweets.
+    """
     # log start message
     logger.info('-' * 80)
     logger.info("Computing embeddings for the training set.")
@@ -388,6 +556,23 @@ def run_zero_shot(
         tweet_col: str = "tweet",
         airlines_col: str = "airlines_mentioned",
         ):
+    """
+    Processes a DataFrame of tweets to identify mentioned airlines using a zero-shot learning approach.
+
+    Notes:
+        - The model is prompted with a system message and the tweet text read from the config file.
+        - You can tweak the promtps in the config file to improve the accuracy of the model.
+        - Edit the config for: prompts.zero_shot
+        - Since this function uses the zero-shot learning approach to identify airlines mentioned in tweets, it has low accuracy.
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing tweets.
+        tweet_col (str, optional): The column name in the DataFrame that contains the tweets. Defaults to "tweet".
+        airlines_col (str, optional): The column name in the DataFrame where the identified airlines will be stored. Defaults to "airlines_mentioned".
+
+    Returns:
+        pd.DataFrame: The DataFrame with an additional column containing the identified airlines for each tweet.
+    """
     # setup the result col
     df[airlines_col] = None
     for i, row in df.iterrows():
@@ -417,6 +602,26 @@ def run_few_shot(
         tweet_col: str = "tweet",
         airlines_col: str = "airlines_mentioned",
         ):
+    """
+    Processes a DataFrame of tweets to extract mentioned airlines using few-shot prompting.
+
+    Notes:
+        - This method provides a static set of examples from the training set to the model for few-shot prompting.
+        - The set if picked at random and is controled by the `num_examples` parameter.
+        - The model is prompted with a system message, the tweet text, and a few examples from the training set.
+        - You can tweak the prompts in the config file to improve the accuracy of the model.
+        - Edit the config for: prompts.few_shot
+        - Since this function uses a few-shot prompting approach to identify airlines mentioned in tweets, it has higher accuracy than zero-shot learning.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing tweets to process.
+        num_examples (int, optional): Number of examples to use for few-shot prompting. Defaults to 10.
+        tweet_col (str, optional): Column name in the DataFrame containing the tweets. Defaults to "tweet".
+        airlines_col (str, optional): Column name in the DataFrame to store the extracted airlines. Defaults to "airlines_mentioned".
+
+    Returns:
+        pd.DataFrame: DataFrame with an additional column containing the extracted airlines for each tweet.
+    """
     # load the training set
     training_df = read_tweets_to_dataframe()
     # get a few _static_ examples from few-shot prompting
@@ -450,6 +655,25 @@ def run_rag(
         tweet_col: str = "tweet",
         airlines_col: str = "airlines_mentioned",
         ):
+    """
+    Processes a DataFrame of tweets to identify mentioned airlines using a Retrieval-Augmented Generation (RAG) approach.
+
+    Notes:
+        - This method uses a RAG model to generate responses based on a combination of the tweet text and similar examples from the training set.
+        - The similar examples are retrieved based on cosine similarity of embeddings.
+        - The number of similar examples to retrieve is controlled by the `num_examples` parameter.
+        - The model shares the same prompts as the few-shot prompting method.
+        - Edit the config for: prompts.few_shot
+        - Since this function uses a RAG model with similar examples, it has higher accuracy than few-shot prompting.
+    Args:
+        df (pd.DataFrame): DataFrame containing tweets to be processed.
+        num_examples (int, optional): Number of similar examples to retrieve for RAG. Defaults to 5.
+        tweet_col (str, optional): Column name in the DataFrame containing the tweet text. Defaults to "tweet".
+        airlines_col (str, optional): Column name in the DataFrame to store the identified airlines. Defaults to "airlines_mentioned".
+
+    Returns:
+        pd.DataFrame: DataFrame with an additional column containing the identified airlines for each tweet.
+    """
     # load the training set
     embeddings_df = read_tweets_embeddings_to_dataframe()
     df[airlines_col] = None
@@ -481,6 +705,27 @@ def run_fine_tuning(
         tweet_col: str = "tweet",
         airlines_col: str = "airlines_mentioned",
         ):
+    """
+    Uses a pre-trained model on a given DataFrame of tweets to extract mentioned airlines.
+
+    Notes:
+        - This method uses a fine-tuned model to extract airlines mentioned in tweets.
+        - The fine-tuned model is expected to be pre-trained by the submit_fine_tuning_model_job() method.
+        - The model is prompted with a system message and the tweet text.
+        - Edit the config for: prompts.fine_tuning
+        - Since this function uses a fine-tuned model, it has higher accuracy than the other methods (but runs a little slower).
+
+    Args:
+        df (pd.DataFrame): DataFrame containing tweets.
+        tweet_col (str, optional): Column name in the DataFrame containing the tweets. Defaults to "tweet".
+        airlines_col (str, optional): Column name in the DataFrame to store the extracted airlines. Defaults to "airlines_mentioned".
+
+    Raises:
+        FileNotFoundError: If the fine-tuned model is not found in the configuration.
+
+    Returns:
+        pd.DataFrame: DataFrame with an additional column containing the extracted airlines.
+    """
     # load the fine-tuned model
     fine_tuned_model = config.get("openai", {}).get("pre_fine_tuned_model", None)
     # check if the fine-tuned model exists
@@ -510,6 +755,21 @@ def run_fine_tuning(
 
 
 def submit_fine_tuning_model_job():
+    """
+    Submits a fine-tuning job for a GPT model based on a training set.
+    This function performs the following steps:
+        1. Logs the start of the fine-tuning process.
+        2. Loads the training set from a specified CSV file.
+        3. Generates an NDJSON file for fine-tuning.
+        4. Uploads the fine-tuning file to OpenAI.
+        5. Submits a fine-tuning job using the uploaded file.
+        6. Waits for the fine-tuning job to complete.
+        7. Logs the completion of the fine-tuning job and the name of the fine-tuned model.
+    Raises:
+        Exception: If any step in the fine-tuning process fails, an exception is logged and re-raised.
+    Note:
+        Ensure that the YAML config file is updated with the new fine-tuned model name after the job completes.
+    """
     # from a gpt model based on the training set
     # load the training set
     try:
@@ -576,6 +836,16 @@ def submit_fine_tuning_model_job():
         raise e
 
 
+# ========================================
+# Main Function
+#
+# Main command line function to run the tweet analysis methods.
+#
+# Example usage:
+#   python main.py --run fine_tuning
+#   python main.py --run few_shot --num-examples 20
+#   python main.py --run zero_shot --input-file data/airlines_test.csv --config-file config.yaml
+# ========================================
 
 @click.command()
 @click.option('--run', type=click.Choice(['zero_shot', 'few_shot', 'rag', 'fine_tuning', 'setup_rag', 'setup_finetuning'], case_sensitive=False), required=True, help='Action to perform')
@@ -584,6 +854,18 @@ def submit_fine_tuning_model_job():
 @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False), default='INFO', help='Application log level')
 @click.option('--num-examples', type=int, default=10, help='Number of examples to be used with few-shot and RAG methods')
 def main(run, input_file, config_file, log_level, num_examples, **kwargs):
+    """
+    Main function to run various tweet analysis methods based on the provided command line arguments.
+    Args:
+        run (str): The action to perform. Options include 'zero_shot', 'few_shot', 'rag', 'fine_tuning', 'setup_rag', 'setup_finetuning'.
+        input_file (str): Path to the input file containing tweets.
+        config_file (str): Path to the configuration file.
+        log_level (str): Logging level (e.g., 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL').
+        num_examples (int): Number of examples to use for few-shot and RAG methods.
+        **kwargs: Additional keyword arguments.
+    Returns:
+        None
+    """
 
     # setup logging level from the command line
     logger.handlers[0].setLevel(getattr(logging, log_level.upper(), logging.INFO))
