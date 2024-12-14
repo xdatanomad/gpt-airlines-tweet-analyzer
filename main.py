@@ -485,24 +485,37 @@ def read_tweets_to_dataframe(filepath: str = None) -> pd.DataFrame:
     """
     # get the training file name form the config if not set
     if filepath is None:
-        filepath = config.get("files", {}).get("training_file", DEFAULT_TRAINING_FILEPATH)
+        filepath = config.get("files", {}).get("test_file", DEFAULT_TRAINING_FILEPATH)
     # read the training file CSV
     # please note:
     #   - airlines column is parsed as a list
     #   - badlines and encoding errors are skipped
+
+    # df = pd.read_csv(
+    #     filepath,
+    #     skip_blank_lines=True,
+    #     skipinitialspace=True,
+    #     encoding_errors='ignore',                   # accounting for utf encoding errors
+    #     on_bad_lines='skip',                        # skip bad tweets and lines
+    #     usecols=["tweet", "airlines"],              # ensure required columns are present
+    #     converters={"airlines": eval},              # parse the airlines column as a list
+    #     )
+
+    # fix to be able to read files without airlines column
     df = pd.read_csv(
         filepath,
         skip_blank_lines=True,
         skipinitialspace=True,
         encoding_errors='ignore',                   # accounting for utf encoding errors
         on_bad_lines='skip',                        # skip bad tweets and lines
-        usecols=["tweet", "airlines"],              # ensure required columns are present
-        converters={"airlines": eval},              # parse the airlines column as a list
         )
-    # check if all airlines were correctly parsed as a list
-    if not all([isinstance(x, list) for x in df["airlines"]]):
-        logger.error(f"airlines column is not a list of strings")
-        raise ValueError(f"airlines column is not a list of strings")
+    # convert the airlines column to a list
+    if "airlines" in df.columns:
+        df["airlines"] = df["airlines"].apply(eval)
+        # check if all airlines were correctly parsed as a list
+        if not all([isinstance(x, list) for x in df["airlines"]]):
+            logger.error(f"airlines column is not a list of strings")
+            raise ValueError(f"airlines column is not a list of strings")
     logger.info(f"Loaded training set from file: {filepath}")
     # return the training dataframe
     return df
@@ -607,6 +620,8 @@ def build_rag_embeddings_db(
     logger.info("This will take a while! Go grab a coffee :)")
 
     # load the training file
+    if training_file is None:
+        training_file = config.get("files", {}).get("training_file", DEFAULT_TRAINING_FILEPATH)
     df = read_tweets_to_dataframe(training_file)
     # calculate embeddings for the tweets column
     df["tweet_embeddings"] = df["tweet"].map(get_embeddings)
