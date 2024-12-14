@@ -8,6 +8,7 @@ from openai import OpenAI
 from tiktoken import encoding_for_model
 from codetiming import Timer
 import csv
+from time import sleep
 from scipy import spatial
 from tenacity import retry, stop_after_attempt, wait_incrementing
 
@@ -211,18 +212,14 @@ def airline_name_extractor_zeroshot(
 def get_embeddings(
         text: str,                              # text to get embeddings for
         ) -> list:
-    try:
-        # Get the encoding for the specified model
-        embedding_model = config.get("openai", {}).get("embedding_model", "text-embedding-3-small")
-        resp = client.embeddings.create(
-            model=embedding_model,
-            input=text,
-        )
-        logger.debug(f"Embeddings::TokenUsage: total={resp.usage.total_tokens}")
-        return resp.data[0].embedding
-    except Exception as e:
-        logger.warning(f"Error getting embeddings for text: {e}")
-        return []
+    # Get the encoding for the specified model
+    embedding_model = config.get("openai", {}).get("embedding_model", "text-embedding-3-small")
+    resp = client.embeddings.create(
+        model=embedding_model,
+        input=text,
+    )
+    # logger.debug(f"Embeddings::TokenUsage: total={resp.usage.total_tokens}")
+    return resp.data[0].embedding
 
 
 def load_training_set(
@@ -364,6 +361,72 @@ def fewshot_rag_airline_name_extractor(
             logger.error(f"Error: {e}")
     return df
 
+
+def fine_tune_model():
+    # from a gpt model based on the training set
+    # load the training set
+    try:
+        # start log message
+        logger.info('-' * 80)
+        logger.info("Starting fine-tuning process.")
+        logger.info('-' * 80)
+        logger.info("This will take a few minutes to complete.")
+
+        # load the training set file
+        training_file = config["files"]["training_file"]
+        logger.info(f"Loading training set from file: {training_file}")
+        df = pd.read_csv(
+            training_file,
+            skip_blank_lines=True,
+            skipinitialspace=True,
+            encoding_errors='ignore',                   # accounting for utf encoding errors
+            on_bad_lines='skip',                        # skip bad tweets and lines
+            usecols=["tweet", "airlines"],              # ensure required columns are present
+            converters={"airlines": eval},              # parse the airlines column as a list
+            )
+        
+        # generate an ndjson file for training
+        ft_filename = config["files"]["fine_tune_file"]
+        logger.info(f"Generating fine-tuning ndjson file: {ft_filename}")
+        with open(ft_filename, "w") as file:
+            for i, row in df.iterrows():
+                line = {
+                    "messages": [
+                        {"role": "system", "content": "You are an expert in identifying airlines mentioned in tweets."},
+                        {"role": "user", "content": f"What airlines are mentioned in this tweet: {row['tweet']}"},
+                        {"role": "assistant", "content": f"{row['airlines']}"},
+                    ],
+                }
+                file.write(json.dumps(line) + "\n")
+
+        # upload the fine-tuning file to openai
+        logger.info(f"Uploading fine-tuning file to OpenAI: {ft_filename}")
+        file_obj = client.files.create(
+            file=open(ft_filename, "rb"), 
+            purpose="fine-tune"
+            )
+        logger.info(f"Fine-tuning file uploaded: {file_obj.id}")
+
+        # run a fine-tuning job
+        logger.info(f"Submitting a fine-tuning job on file: {ft_filename}")
+        ft_model = config.get("openai", {}).get("fine_tune_model", "gpt-3.5-turbo")
+        job = client.fine_tuning.jobs.create(
+            model=ft_model,
+            training_file=file_obj.id,
+        )
+        logger.info(f"Fine-tuning job started: {job.id}")
+
+        # wait for the job to complete
+        while job.status != "succeeded":
+            sleep(5)
+            job = client.fine_tuning.jobs.retrieve(job.id)
+            logger.info(f"Checking fine-tuning job status: {job.status}")
+        logger.info(f"Fine-tuning job completed. Model name: {job.fine_tuned_model}")
+
+        
+    except Exception as e:
+        logger.error(f"Fine-tuning job failed! Error: {e}")
+        raise e
 
 def chunk_dataframe_by_max_tokens(df: pd.DataFrame, max_tokens=12000, tokens_col: str = "tokens"):
     """returns the next chunk of the dataframe until a max number of tokens are reached"""
@@ -510,6 +573,11 @@ def test_similirity_search():
     print(sim_tweets)
 
 
+def test_fine_tune_model():
+    fine_tune_model()
+
+
 if __name__ == '__main__':
     # main()
-    test_similirity_search()
+    # test_similirity_search()
+    test_fine_tune_model()

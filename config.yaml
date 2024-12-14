@@ -5,7 +5,8 @@ files:
   test_file: ./data/airline_test.csv
   # Path to the output file
   output_file: ./data/output.csv
-  training_cache: ./.training_cache.parquet
+  training_cache: ./training_cache.parquet
+  fine_tune_file: ./fine_tune.jsonl
 
 # OpenAI Configuration
 openai:
@@ -15,6 +16,7 @@ openai:
   api_key:
   model: gpt-3.5-turbo
   embedding_model: text-embedding-3-small
+  fine_tune_model: gpt-3.5-turbo-0125
   # max_tokens: 160000
   # max_prompt_tokens: 8000
   temperature: 0.0

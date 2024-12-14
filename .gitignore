@@ -5,6 +5,8 @@ data/
 *.csv
 *.log
 *.parquet
+*.ndjson
+*.jsonl
 report.md
 
 # ========================
