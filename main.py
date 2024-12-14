@@ -1,17 +1,15 @@
 import os
-import logging.handlers
+import sys
 import logging
+import logging.handlers
 import yaml
 import json
+import time
+from datetime import datetime
 import pandas as pd
-from openai import OpenAI
-from tiktoken import encoding_for_model
-from codetiming import Timer
-import csv
-from time import sleep
-from scipy import spatial
 from tenacity import retry, stop_after_attempt, wait_incrementing
-
+from scipy import spatial
+from openai import OpenAI
 
 # ========================================
 # SETTING UP LOGGING AND APPLICATION CONFIGURATION
@@ -83,6 +81,65 @@ DEFAULT_TRAINING_EMBEDDINGS_FILEPATH = "data/airline_embeddings.parquet"        
 DEFAULT_FINE_TUNING_FILEPATH = "data/airline_fine_tune.jsonl"                   # Model Fine-tuning file. Used by the fine-tuning method
 
 
+
+class ApplicationRunStatistics:
+    def __init__(
+            self,
+            action: str = "Generic",
+            ):
+        # generate a short id for the run
+        self.run_id = f"run-{datetime.now().strftime("%Y%m%d-%H%M%S")}"
+        self.start_time = time.time()
+        self.end_time = None
+        self.action = action
+        # capture command line arguments
+        self.cmdline_args = sys.argv[1:]
+        # tokens uages
+        self.tokens_uages = {
+            "prompt": 0,
+            "response": 0,
+            "embeddings": 0,
+            "total": 0,
+        }
+        # openai calls stats
+        self.openai_calls = {
+            "chat_completion": 0,
+            "embeddings": 0,
+            "chat_completion_runtime": 0,
+            "embeddings_runtime": 0,
+        }
+
+    def update_chat_completion_stats(self, resp, runtime: float = 0, log: bool = False):
+        try:
+            self.openai_calls["chat_completion"] += 1
+            self.openai_calls["chat_completion_runtime"] += runtime
+            self.tokens_uages["prompt"] += resp.usage.prompt_tokens
+            self.tokens_uages["response"] += resp.usage.completion_tokens
+            self.tokens_uages["total"] += resp.usage.total_tokens
+            if log:
+                logger.debug(f"ChatCompletion Stats: runtime={runtime:.3f}s, prompt_tokens={resp.usage.prompt_tokens}, response_tokens={resp.usage.completion_tokens}, total_tokens={resp.usage.total_tokens}")
+        except Exception as e:
+            pass
+
+    def update_embeddings_stats(self, resp, runtime: float = 0, log: bool = False):
+        try:
+            self.openai_calls["embeddings"] += 1
+            self.openai_calls["embeddings_runtime"] += runtime
+            self.openai_calls["embeddings"] += resp.usage.total_tokens
+            if log:
+                logger.debug(f"Embeddings Stats: runtime={runtime:.3f}s, total_tokens={resp.usage.total_tokens}")
+        except Exception as e:
+            pass
+
+    def check_results():
+        pass
+        
+
+# Define a global object to store application run statistics
+job_run = ApplicationRunStatistics()
+
+
+
 # ========================================
 # OpenAI Base API Calls
 #
@@ -115,6 +172,8 @@ def chat_completion(
         presence_penalty = config.get("openai", {}).get("presence_penalty", 0.0)
         # Set model output format to JSON
         response_format = {"type": "json_object"}
+        # Time the call
+        start_time = time.time()
         # Call chat completion API
         resp = client.chat.completions.create(
             model=model,
@@ -128,8 +187,9 @@ def chat_completion(
             frequency_penalty=frequency_penalty,        # frequency_penalty parameter: 0.0 to 1.0. Lower values penalize frequent tokens
             presence_penalty=presence_penalty,          # presence_penalty parameter: 0.0 to 1.0. Lower values penalize tokens that are already present in the prompt
         )
-        # Log token usage
-        logger.debug(f"ChatCompletion::TokenUsage: prompt={resp.usage.prompt_tokens}, response={resp.usage.completion_tokens}, total={resp.usage.total_tokens}")
+        end_time = time.time()
+        # update stats
+        job_run.update_chat_completion_stats(resp, runtime=(end_time - start_time), log=True)
         # convert the response to a json
         resp = resp.choices[0].message.content
         resp = json.loads(resp)
@@ -153,13 +213,17 @@ def chat_completion(
 def get_embeddings(
         text: str,                              # text to get embeddings for
         ) -> list:
+    # Time the call
+    start_time = time.time()
     # Get the encoding for the specified model
     embedding_model = config.get("openai", {}).get("embedding_model", DEFAULT_EMBEDDING_MODEL)
     resp = client.embeddings.create(
         model=embedding_model,
         input=text,
     )
-    # logger.debug(f"Embeddings::TokenUsage: total={resp.usage.total_tokens}")
+    end_time = time.time()
+    # update stats
+    job_run.update_embeddings_stats(resp, runtime=(end_time - start_time), log=True)
     return resp.data[0].embedding
 
 
@@ -323,8 +387,8 @@ def few_shot_example(
     # load the training set
     training_df = load_training_df()
     # get a few examples from the training set
-    fewshot_df = training_df.sample(num_examples)
-    fewshot_csv_string = fewshot_df.to_csv(index=False, header=True, quoting=csv.QUOTE_MINIMAL)
+    fewshot_examples = training_df.sample(num_examples)
+    fewshot_examples_str = fewshot_examples.to_csv(index=False)
     df[airlines_col] = None
     df["correct"] = False
     for i, row in df.iterrows():
@@ -334,7 +398,7 @@ def few_shot_example(
             system_message = config["prompts"]["few_shot"]["system"]
             prompt = config["prompts"]["few_shot"]["prompt"]
             # df[airlines_col] = df[tweet_col].map(lambda x: )
-            prompt = prompt.format(tweet=row[tweet_col], examples=fewshot_csv_string)
+            prompt = prompt.format(tweet=row[tweet_col], examples=fewshot_examples_str)
             json_resp = chat_completion(system_message, prompt)
             # parse the response
             airlines = post_process_json_response(json_resp)
@@ -442,7 +506,7 @@ def fine_tune_model_jobrun():
 
         # wait for the job to complete
         while job.status != "succeeded":
-            sleep(5)
+            time.sleep(5)
             job = client.fine_tuning.jobs.retrieve(job.id)
             logger.info(f"Checking fine-tuning job status: {job.status}")
         logger.info(f"Fine-tuning job completed. Model name: {job.fine_tuned_model}")
@@ -454,45 +518,7 @@ def fine_tune_model_jobrun():
 
 
 def main():
-    # Create an instance of the OpenAI class
-    client = OpenAI()
-
-    # Get the completion from the API
-    # completion = client.chat.completions.create(
-    #     model="gpt-3.5-turbo",
-    #     messages=[
-    #         {"role": "system", "content": "You are a helpful assistant."},
-    #         {"role": "user", "content": "What is the purpose of life?"}
-    #     ]
-    # )
-
-    # # Print the completion
-    # print(completion.__dict__, "\n\n")
-    # print(completion.choices[0].message.content)
-
-    # Get the number of tokens in a string
-    # num_tokens = num_tokens_from_string("A config file is required to run the application. Please create a config file called `config.yaml` in the current directory.")
-    # print(f"Number of tokens: {num_tokens}")
-
-    # Get the number of tokens in a dataframe
-    # df = pd.DataFrame({
-    #     "text": ["A config file is required to run the application. Please create a config file called `config.yaml` in the current directory.", "This is a test string."]
-    # })
-    # compute_tokens_for_dataframe(df, "text")
-    # print(df)
-
-    filepath = r"data/airline_test.csv"
-    df = pd.read_csv(
-            filepath,
-            skip_blank_lines=True,
-            skipinitialspace=True,
-            encoding_errors='ignore',
-            on_bad_lines='skip',
-            )
-    # rdf = airline_name_extractor_zeroshot(df)
-    # rdf.to_csv("data/airlines_zeroshot.csv", index=False)
-    # rdf = few_shot_airline_name_extractor(df)
-    # rdf.to_csv("data/airlines_fewshot.csv", index=False)
+    pass
 
 
 # ========================================
@@ -514,7 +540,12 @@ def test_fine_tune_model_job():
     fine_tune_model_jobrun()
 
 
+
+# ========================================
+# Main Application Entry Point
+# ========================================
+
 if __name__ == '__main__':
     # main()
-    # test_similirity_search()
-    test_fine_tune_model_job()
+    test_similirity_search()
+    # test_fine_tune_model_job()
