@@ -1,0 +1,41 @@
+airlines_mapping:
+  Air Canada:
+  - Air Canada
+  American Airlines:
+  - American Airlines
+  - American Airline
+  - '@AmericanAir'
+  - AmericanAir
+  - AA
+  - American Air
+  Delta Air Lines:
+  - Delta Air
+  - '@Delta'
+  JetBlue Airways:
+  - JetBlue
+  - '@JetBlue'
+  - Jet Blue
+  - JetBlue Airways
+  Southwest Airlines:
+  - Southwest Air
+  - '@SouthwestAir'
+  - Southwest Airlines
+  - SouthwestAir
+  US Airways:
+  - USAirways
+  - '@usairways'
+  - US Air
+  - '@usair'
+  - US Airways
+  - '@USAirways'
+  United Airlines:
+  - United
+  - UA
+  - United Airline
+  - United Air
+  - United Airlines
+  - '@united'
+  Virgin America:
+  - Virgin America
+  - VirginAmerica
+  - '@VirginAmerica'

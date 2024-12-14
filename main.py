@@ -1,13 +1,12 @@
-
 import logging.handlers
-import os
 import logging
 import yaml
+import json
 import pandas as pd
 from openai import OpenAI
 from tiktoken import encoding_for_model
 from codetiming import Timer
-
+import csv
 
 
 DEFAULT_CONFIG_FILE = "config.yaml"
@@ -28,7 +27,7 @@ def setup_logging(log_level: str = "INFO"):
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     # File handler
-    max_logfile_size = 10 * 1024 * 1024         # 10 MB
+    max_logfile_size = 30 * 1024 * 1024         # MBs
     file_handler = logging.handlers.RotatingFileHandler(
         'app.log', 
         maxBytes=max_logfile_size, 
@@ -106,19 +105,140 @@ def compute_tokens_for_dataframe(
         raise e
 
 
-def build_airline_names_mapping_dict_from_training_set(
-        training_file: str,                     # path to the training file
-        airline_col: str = "airline",           # name of the column with airline names
-        airline_id_col: str = "airline_id"       # name of the column with airline ids
+
+# setup openai client
+client = OpenAI()
+
+
+def chat_completion(
+        system_message: str,                    # system message
+        prompt: str,                            # user message
+        temperature: float = 0.0,               # temperature
+        top_p: float = 0.0,                     # top p value
+        frequency_penalty: float = 1.0,         # frequency penalty
+        presence_penalty: float = 1.0           # presence penalty
         ) -> dict:
     try:
-        # Get the unique airline names
-        airline_names = training_set[airline_col].unique()
-        # Get the unique airline ids
-        airline_ids = training_set[airline_id_col].unique()
-        # Create a dictionary mapping airline names to airline ids
-        airline_names_mapping = dict(zip(airline_names, airline_ids))
-        return airline_names_mapping
+        # Get the completion from the API
+        global client
+        model = config.get("openai", {}).get("model", "gpt-3.5-turbo")
+        if temperature is None:
+            temperature = config.get("openai", {}).get("temperature", 0.0)
+        response_format = {"type": "json_object"}
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=temperature,
+            response_format=response_format,
+            top_p=top_p,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+        )
+        # print the response token uasge
+        logger.info(f"ChatCompletion::TokenUsage: prompt={completion.usage.prompt_tokens}, response={completion.usage.completion_tokens}, total={completion.usage.total_tokens}")
+        resp = completion.choices[0].message.content
+        # convert the response to a json
+        resp = json.loads(resp)
+        return resp
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid GPT JSON response. Error parsing JSON output: {e}")
+        raise e
+    except Exception as e:
+        logger.error(f"Error getting chat completion: {e}")
+        raise e
+
+
+def chunk_dataframe_by_max_tokens(df: pd.DataFrame, max_tokens=12000, tokens_col: str = "tokens"):
+    """returns the next chunk of the dataframe until a max number of tokens are reached"""
+    start_index = 0
+    end_index = 0
+    token_sum = 0
+    for i, row in df.iterrows():
+        token_sum += row[tokens_col]
+        if token_sum > max_tokens:
+            end_index = i - 1
+            yield df.iloc[start_index:end_index]
+            start_index = end_index
+            token_sum = row[tokens_col]
+    # yield the last chunk
+    if start_index < len(df):
+        yield df.iloc[start_index:]
+
+
+def build_airline_names_mapping_dict_from_training_set(
+        training_file: str,                     # path to the training file
+        ) -> dict:
+    try:
+        df = pd.read_csv(
+            training_file,
+            skip_blank_lines=True,
+            skipinitialspace=True,
+            encoding_errors='ignore',
+            on_bad_lines='skip',
+            )
+        # check the columns to make sure we have the required columns
+        cols = ["tweet", "airlines"]
+        if not all([col in df.columns for col in cols]):
+            logger.error(f"Missing required columns in training file: {cols}")
+            raise ValueError(f"Missing required columns in training file: {cols}")
+        # parse the airlines column as a list
+        df["airlines"] = df["airlines"].apply(lambda x: eval(f"list({x})"))
+        # compute the number of tokens
+        compute_tokens_for_dataframe(df, cols=cols)
+        
+        # data
+        print(f"df shape: {df.shape}")
+        airline_aliases = {}
+        total_rows = 0
+        for chunk in chunk_dataframe_by_max_tokens(df):
+            print(f"chuck size: {chunk.shape}, tokens: {chunk['tokens'].sum()}, mix/max index: {chunk.index.min()}/{chunk.index.max()}")
+            # chunk['str_col'] = chunk.apply(lambda x: x.to_dict(), axis=1)
+            total_rows += len(chunk)
+            # reset the index
+            chunk.reset_index(drop=True, inplace=True)
+            # output the chunk to a csv formatted string buffer
+            csv_buffer = chunk[cols].to_csv(index=False, header=True, quoting=csv.QUOTE_STRINGS)
+            # print(csv_buffer)
+            # call the completion function
+            # call the prompt completion function
+            system_message = config["prompts"]["airline_name_mapping"]["system"]
+            prompt = config["prompts"]["airline_name_mapping"]["prompt"]
+            top_p = config["prompts"]["airline_name_mapping"]["top_p"]
+            frequency_penalty = config["prompts"]["airline_name_mapping"]["frequency_penalty"]
+            presence_penalty = config["prompts"]["airline_name_mapping"]["presence_penalty"]
+            prompt = prompt.format(data=csv_buffer)
+            print(prompt)
+            completion = chat_completion(system_message, prompt, top_p=top_p, frequency_penalty=frequency_penalty, presence_penalty=presence_penalty)
+            print("\n\n\n")
+            print(completion)
+            print("\n\n\n")
+            for k, v in completion.items():
+                if k not in airline_aliases:
+                    airline_aliases[k] = v
+                else:
+                    airline_aliases[k].extend(v)
+        # make sure the values are unique
+        for k, v in airline_aliases.items():
+            airline_aliases[k] = list(set(v))
+        print(f"total rows: {total_rows}")
+        print("\n\n\n")
+        print(airline_aliases)
+        print("\n\n\n")
+
+        # # post process the airline names
+        # system = config["prompts"]["airline_name_mapping_post_process"]["system"]
+        # prompt = config["prompts"]["airline_name_mapping_post_process"]["prompt"]
+        # # insert data
+        # prompt = prompt.format(data=airline_aliases)
+        # completion = chat_completion(system, prompt)
+        # # save the airline names into the yaml config file
+        # data = {"airlines_mapping": completion}
+        data = {"airlines_mapping": airline_aliases}
+        with open("airlines_mapping.yml", "w") as file:
+            yaml.dump(data, file)
     except Exception as e:
         logger.error(f"Error building airline names mapping dictionary from training set: {e}")
         raise e
@@ -146,11 +266,13 @@ def main():
     # print(f"Number of tokens: {num_tokens}")
 
     # Get the number of tokens in a dataframe
-    df = pd.DataFrame({
-        "text": ["A config file is required to run the application. Please create a config file called `config.yaml` in the current directory.", "This is a test string."]
-    })
-    compute_tokens_for_dataframe(df, "text")
-    print(df)
+    # df = pd.DataFrame({
+    #     "text": ["A config file is required to run the application. Please create a config file called `config.yaml` in the current directory.", "This is a test string."]
+    # })
+    # compute_tokens_for_dataframe(df, "text")
+    # print(df)
+
+    build_airline_names_mapping_dict_from_training_set(r"data/airline_train.csv")
 
 
 if __name__ == '__main__':
