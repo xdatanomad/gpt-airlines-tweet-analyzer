@@ -167,6 +167,10 @@ class ApplicationRunStatistics:
             "chat_completion_runtime": 0,
             "embeddings_runtime": 0,
         }
+        # accuracy stats
+        self.acuracy = 0
+        self.correct_lines = 0
+        self.incorrect_lines = 0
 
     def update_chat_completion_stats(self, resp, runtime: float = 0, log: bool = False):
         """
@@ -209,8 +213,34 @@ class ApplicationRunStatistics:
         except Exception as e:
             pass
 
-    def check_results():
-        pass
+    def check_results(
+            self,
+            df: pd.DataFrame,
+            correct_col: str = "airlines",
+            processed_col: str = "airlines_mentioned",
+            ):
+        """
+        Placeholder method to check the results of the application run.
+        Args:
+            df (pd.DataFrame): The DataFrame containing the tweets and the extracted airlines.
+            correct_col (str, optional): The column name in the DataFrame containing the correct airlines. Defaults to "airlines".
+            processed_col (str, optional): The column name in the DataFrame containing the extracted airlines. Defaults to "airlines_mentioned".
+        """
+        # check if the correct and processed columns exist in the dataframe
+        if correct_col not in df.columns or processed_col not in df.columns:
+            logger.warning(f"Columns {correct_col} or {processed_col} not found in the DataFrame. Accuracy is NOT calculated.")
+            return
+        # calculate the accuracy by comparing the correct airlines with the extracted airlines
+        correct = df[correct_col].apply(set)
+        processed = df[processed_col].apply(set)
+        accuracy = (correct == processed).mean()
+        # calculate number of correct and incorrect lines
+        correct_lines = (correct == processed).sum()
+        incorrect_lines = len(df) - correct_lines
+        # set stats
+        self.acuracy = accuracy
+        self.correct_lines = correct_lines
+        self.incorrect_lines = incorrect_lines
 
     def print_stats(self):
         """
@@ -221,6 +251,7 @@ class ApplicationRunStatistics:
         self.elapsed_time = self.end_time - self.start_time
         logger.info(f"Run ID: {self.run_id}")
         logger.info(f"Action: {self.action}")
+        # logger.info(f"Description: {self.description}")
         logger.info(f"Run Time: {self.elapsed_time:.3f}s")
         logger.info(f"OpenAI API Calls:")
         logger.info(f"  Chat Completions: {self.openai_calls['chat_completion']}")
@@ -232,6 +263,10 @@ class ApplicationRunStatistics:
         logger.info(f"  Response Tokens: {self.tokens_usage['response']}")
         logger.info(f"  Embeddings Tokens: {self.tokens_usage['embeddings']}")
         logger.info(f"  Total Tokens: {self.tokens_usage['total']}")
+        logger.info(f"Accuracy Scores:")
+        logger.info(f"  Accuracy: {(self.acuracy * 100):.3f}%")
+        logger.info(f"  Correct Lines: {self.correct_lines}")
+        logger.info(f"  Incorrect Lines: {self.incorrect_lines}")
 
     def __str__(self):
         return f"Run ID: {self.run_id}, Action: {self.action}, Elapsed Time: {self.elapsed_time:.3f}s"
@@ -870,8 +905,6 @@ def main(run, input_file, config_file, log_level, num_examples, **kwargs):
     # setup logging level from the command line
     logger.handlers[0].setLevel(getattr(logging, log_level.upper(), logging.INFO))
 
-    logger.debug(f"Running action: {run}, input_file: {input_file}, config_file: {config_file}, log_level: {log_level}, num_examples: {num_examples}")
-
     # load the config file if provided and update the default settings
     if config_file:
         global config
@@ -888,6 +921,7 @@ def main(run, input_file, config_file, log_level, num_examples, **kwargs):
         return
     
     # run the appropriate method based on the command line
+    job_run.action = run    # log the action taken in this job
     if run == 'zero_shot':
         df = read_tweets_to_dataframe(filepath=input_file)
         df = run_zero_shot(df)
@@ -914,7 +948,8 @@ def main(run, input_file, config_file, log_level, num_examples, **kwargs):
     output_file = config.get("files", {}).get("output_file", "data/airline_output.csv")
     df.to_csv(output_file, index=False)
     logger.info(f"Results saved to file: {output_file}")
-    # print the stats
+    # computer accuracy scores and print the stats
+    job_run.check_results(df)
     job_run.print_stats()
 
 
