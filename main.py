@@ -112,6 +112,12 @@ DEFAULT_TRAINING_EMBEDDINGS_FILEPATH = "data/airline_embeddings.parquet"        
 DEFAULT_FINE_TUNING_FILEPATH = "data/airline_fine_tune.jsonl"                   # Model Fine-tuning file. Used by the fine-tuning method
 
 
+# ========================================
+# Application Run Statistics
+#
+# A great helper class to track and log the statistics of an application's run, 
+# including OpenAI API call statistics and token usage.
+# ========================================
 
 class ApplicationRunStatistics:
     """
@@ -171,6 +177,7 @@ class ApplicationRunStatistics:
         self.acuracy = 0
         self.correct_lines = 0
         self.incorrect_lines = 0
+        self.nrows = 0
 
     def update_chat_completion_stats(self, resp, runtime: float = 0, log: bool = False):
         """
@@ -220,7 +227,8 @@ class ApplicationRunStatistics:
             processed_col: str = "airlines_mentioned",
             ):
         """
-        Placeholder method to check the results of the application run.
+        Calculates the accuracy of the extracted airlines by comparing them with the correct airlines in the DataFrame.
+
         Args:
             df (pd.DataFrame): The DataFrame containing the tweets and the extracted airlines.
             correct_col (str, optional): The column name in the DataFrame containing the correct airlines. Defaults to "airlines".
@@ -241,11 +249,12 @@ class ApplicationRunStatistics:
         self.acuracy = accuracy
         self.correct_lines = correct_lines
         self.incorrect_lines = incorrect_lines
+        self.nrows = len(df)
 
-    def print_stats(self):
+    def print_stats(self, filepath: str = None):
         """
         Prints the statistics of the current run including run ID, action, elapsed time,
-        OpenAI API calls, and token usage.
+        OpenAI API calls, and token usage. Optionally, the statistics can be saved to a file.
         """
         self.end_time = time.time()
         self.elapsed_time = self.end_time - self.start_time
@@ -267,6 +276,27 @@ class ApplicationRunStatistics:
         logger.info(f"  Accuracy: {(self.acuracy * 100):.3f}%")
         logger.info(f"  Correct Lines: {self.correct_lines}")
         logger.info(f"  Incorrect Lines: {self.incorrect_lines}")
+        # if a file path is provided, save the stats to the file
+        if filepath is not None:
+            header = not os.path.exists(filepath)
+            record = {
+                "run_id": self.run_id,
+                "action": self.action,
+                "nrows": self.nrows,
+                "run_time": self.elapsed_time,
+                "chat_completions_calls": self.openai_calls["chat_completion"],
+                "chat_completion_runtime": self.openai_calls["chat_completion_runtime"],
+                "embeddings_calls": self.openai_calls["embeddings"],
+                "embeddings_runtime": self.openai_calls["embeddings_runtime"],
+                "prompt_tokens": self.tokens_usage["prompt"],
+                "response_tokens": self.tokens_usage["response"],
+                "embeddings_tokens": self.tokens_usage["embeddings"],
+                "total_tokens": self.tokens_usage["total"],
+                "accuracy": self.acuracy,
+                "correct_lines": self.correct_lines,
+                "incorrect_Lines": self.incorrect_lines,
+            }
+            pd.DataFrame([record]).to_csv(filepath, index=False, mode="a", header=header)
 
     def __str__(self):
         return f"Run ID: {self.run_id}, Action: {self.action}, Elapsed Time: {self.elapsed_time:.3f}s"
@@ -950,7 +980,7 @@ def main(run, input_file, config_file, log_level, num_examples, **kwargs):
     logger.info(f"Results saved to file: {output_file}")
     # computer accuracy scores and print the stats
     job_run.check_results(df)
-    job_run.print_stats()
+    job_run.print_stats(filepath="stats.csv")
 
 
 # ========================================
