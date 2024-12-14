@@ -16,7 +16,7 @@ logger: logging.Logger = None
 config: dict = {}
 
 # Set up logging
-def setup_logging(log_level: str = "INFO"):
+def setup_logging(log_level: str = "INFO") -> logging.Logger:
     logger = logging.getLogger('main')
     level = getattr(logging, log_level.upper(), logging.INFO)
     logger.setLevel(level)
@@ -113,18 +113,18 @@ client = OpenAI()
 def chat_completion(
         system_message: str,                    # system message
         prompt: str,                            # user message
-        temperature: float = 0.0,               # temperature
-        top_p: float = 0.0,                     # top p value
-        frequency_penalty: float = 1.0,         # frequency penalty
-        presence_penalty: float = 1.0           # presence penalty
         ) -> dict:
     try:
         # Get the completion from the API
         global client
         model = config.get("openai", {}).get("model", "gpt-3.5-turbo")
-        if temperature is None:
-            temperature = config.get("openai", {}).get("temperature", 0.0)
+        # get openai chat completion fine-tuning parameters
+        temperature = config.get("openai", {}).get("temperature", 0.0)
+        top_p = config.get("openai", {}).get("top_p", 0.0)
+        frequency_penalty = config.get("openai", {}).get("frequency_penalty", 0.0)
+        presence_penalty = config.get("openai", {}).get("presence_penalty", 0.0)
         response_format = {"type": "json_object"}
+
         completion = client.chat.completions.create(
             model=model,
             messages=[
@@ -138,17 +138,142 @@ def chat_completion(
             presence_penalty=presence_penalty,
         )
         # print the response token uasge
+        # logger.debug(f"promopt:\n{prompt}")
         logger.info(f"ChatCompletion::TokenUsage: prompt={completion.usage.prompt_tokens}, response={completion.usage.completion_tokens}, total={completion.usage.total_tokens}")
         resp = completion.choices[0].message.content
         # convert the response to a json
         resp = json.loads(resp)
         return resp
     except json.JSONDecodeError as e:
+        logger.warning(f"GPT response: {completion.choices[0].message.content}")
         logger.error(f"Invalid GPT JSON response. Error parsing JSON output: {e}")
         raise e
     except Exception as e:
         logger.error(f"Error getting chat completion: {e}")
         raise e
+
+
+def parse_response_json_for_list_of_airlines(response: dict) -> list:
+    # if the response if already a list, return it
+    if isinstance(response, list):
+        return response
+    # if the response is a dictionary, check if it has common known keys
+    elif isinstance(response, dict):
+        if "airlines" in response and isinstance(response["airlines"], list):
+            return response["airlines"]
+        elif "airlines_mentioned" in response and isinstance(response["airlines_mentioned"], list):
+            return response["airlines_mentioned"]
+        else:
+            # return the first key that hold a list
+            for k, v in response.items():
+                if isinstance(v, list):
+                    return v
+    # all else fails
+    logger.warning(f"JSON response: {response}")
+    raise ValueError("Invalid response JSON format. No list of airlines found.")
+
+
+def airline_name_extractor_zeroshot(
+        df: pd.DataFrame,
+        tweet_col: str = "tweet",
+        airlines_col: str = "airlines_mentioned",
+        test_col: str = "airlines",
+        ):
+    df[airlines_col] = None
+    df["correct"] = False
+    for i, row in df.iterrows():
+        try:
+            logger.info(f"line: {i + 1} tweet: {row[tweet_col]}")
+            # call the completion function
+            system_message = config["prompts"]["zero_shot"]["system"]
+            prompt = config["prompts"]["zero_shot"]["prompt"]
+            # df[airlines_col] = df[tweet_col].map(lambda x: )
+            prompt = prompt.format(tweet=row[tweet_col])
+            json_resp = chat_completion(system_message, prompt)
+            # parse the response
+            airlines = parse_response_json_for_list_of_airlines(json_resp)
+            # add the airlines to the dataframe
+            df.at[i, airlines_col] = airlines
+            # check if the airlines are correct
+            if eval(f"list({row[test_col]})") == airlines:
+                df.at[i, "correct"] = True
+            # if i > 25:
+            #     break
+        except Exception as e:
+            logger.error(f"Error extracting airline names from tweet: {row[tweet_col]}")
+            logger.error(f"Error: {e}")
+    return df
+
+
+
+def load_training_set(
+        training_file: str,                     # path to the training file
+        ) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(
+            training_file,
+            skip_blank_lines=True,
+            skipinitialspace=True,
+            encoding_errors='ignore',
+            on_bad_lines='skip',
+            usecols=["tweet", "airlines"],
+            converters={"airlines": eval},
+            )
+        # check the columns to make sure we have the required columns
+        # cols = ["tweet", "airlines"]
+        # if not all([col in df.columns for col in cols]):
+        #     logger.error(f"Missing required columns in training file: {cols}")
+        #     raise ValueError(f"Missing required columns in training file: {cols}")
+        # parse the airlines column as a list
+        # df["airlines"] = df["airlines
+        # check if airlines column is actually a list of stirngs
+        if not all([isinstance(x, list) for x in df["airlines"]]):
+            logger.error(f"airlines column is not a list of strings")
+            raise ValueError(f"airlines column is not a list of strings")
+        return df
+    except Exception as e:
+        logger.error(f"Error loading training set from file: {training_file}")
+        raise e
+
+
+def few_shot_airline_name_extractor(
+        df: pd.DataFrame,
+        num_examples: int = 10,
+        tweet_col: str = "tweet",
+        airlines_col: str = "airlines_mentioned",
+        test_col: str = "airlines",
+        ):
+    # load the training set
+    training_file = config["files"]["training_file"]
+    training_df = load_training_set(training_file)
+    # get a few examples from the training set
+    fewshot_df = training_df.sample(num_examples)
+    fewshot_csv_string = fewshot_df.to_csv(index=False, header=True, quoting=csv.QUOTE_MINIMAL)
+    df[airlines_col] = None
+    df["correct"] = False
+    for i, row in df.iterrows():
+        try:
+            logger.info(f"line: {i + 1} tweet: {row[tweet_col]}")
+            # call the completion function
+            system_message = config["prompts"]["few_shot"]["system"]
+            prompt = config["prompts"]["few_shot"]["prompt"]
+            # df[airlines_col] = df[tweet_col].map(lambda x: )
+            prompt = prompt.format(tweet=row[tweet_col], examples=fewshot_csv_string)
+            json_resp = chat_completion(system_message, prompt)
+            # parse the response
+            airlines = parse_response_json_for_list_of_airlines(json_resp)
+            # add the airlines to the dataframe
+            df.at[i, airlines_col] = airlines
+            # check if the airlines are correct
+            if eval(f"list({row[test_col]})") == airlines:
+                df.at[i, "correct"] = True
+            if i > 50:
+                break
+        except Exception as e:
+            logger.error(f"Error extracting airline names from tweet: {row[tweet_col]}")
+            logger.error(f"Error: {e}")
+    return df
+
 
 
 def chunk_dataframe_by_max_tokens(df: pd.DataFrame, max_tokens=12000, tokens_col: str = "tokens"):
@@ -272,7 +397,18 @@ def main():
     # compute_tokens_for_dataframe(df, "text")
     # print(df)
 
-    build_airline_names_mapping_dict_from_training_set(r"data/airline_train.csv")
+    filepath = r"data/airline_test.csv"
+    df = pd.read_csv(
+            filepath,
+            skip_blank_lines=True,
+            skipinitialspace=True,
+            encoding_errors='ignore',
+            on_bad_lines='skip',
+            )
+    # rdf = airline_name_extractor_zeroshot(df)
+    # rdf.to_csv("data/airlines_zeroshot.csv", index=False)
+    rdf = few_shot_airline_name_extractor(df)
+    rdf.to_csv("data/airlines_fewshot.csv", index=False)
 
 
 if __name__ == '__main__':

@@ -1,4 +1,10 @@
 
+files:
+  # Path to the training data file
+  training_file: ./data/airline_train.csv
+  test_file: ./data/airline_test.csv
+  # Path to the output file
+  output_file: ./data/output.csv
 
 # OpenAI Configuration
 openai:
@@ -30,27 +36,62 @@ prompts:
   zero_shot:
     system: You are an expert in identifying airlines mentioned in tweets. 
     prompt: |
-      You are an expert in identifying airlines mentioned in tweets. 
       Your task is to take a given tweet and return a list of all airlines referenced, regardless of how they are named or spelled. 
       You have a comprehensive internal reference dictionary of airline names, aliases, abbreviations, social handles, and common misspellings. 
-      You must map any mention to the correct canonical airline name as recognized by the aviation industry (e.g., "United" → "United Airlines", "American Air" → "American Airlines", "Delta" → "Delta Air Lines", "Southwest Air" → "Southwest Airlines", "JetBlue" → "JetBlue Airways", "US Air" → "US Airways").
+      You must map any mention to the correct canonical airline name as recognized by the aviation industry (e.g., "United" → "United Airlines", "American Air" → "American Airlines").
 
       Rules:
-      1. Always return the results in a JSON list format. Example: ["Airline A", "Airline B"]
-      2. The JSON should contain all airlines mentioned in the tweet, in the order they appear.
-      3. Standardize to the airline's correct name recognized by the aviation industry.
-      4. If no airlines are mentioned, return an empty list: []
-      5. Never include extra commentary, only the JSON list.
+      - Always return the results in a JSON list format.
+      - The JSON should contain all unique airlines mentioned in the tweet, if multiple airlines.
+      - Standardize to the airline's correct canonical airline name.
+      - If no airlines are mentioned, return an empty list: []
+      - Never include extra commentary, only the JSON list.
 
-      Now process the following tweet and identify the airlines mentioned:
+      Sample JSON response:
+      ```json
+      {{
+        "airlines": ["United Airlines", "JetBlue Airways"]
+      }}
+      ```
+
+      Now process this tweet:
 
       TWEET:
       {tweet}
   
+  few_shot:
+    system: You are an expert in identifying airlines mentioned in tweets. 
+    prompt: |
+      Your task is to take a given tweet and return a list of all airlines referenced, regardless of how they are named or spelled. 
+      You have a comprehensive internal reference dictionary of airline names, aliases, abbreviations, social handles, and common misspellings. 
+      You must map any mention to the correct canonical airline name as recognized by the aviation industry (e.g., "United" → "United Airlines", "American Air" → "American Airlines").
+
+      Rules:
+      - Always return the results in a JSON list format.
+      - The JSON should contain all unique airlines mentioned in the tweet, if multiple airlines.
+      - Standardize to the airline's correct canonical airline name.
+      - If no airlines are mentioned, return an empty list: []
+      - Never include extra commentary, only the JSON list.
+
+      Sample JSON response:
+      ```json
+      {{
+        "airlines": ["United Airlines", "JetBlue Airways"]
+      }}
+      ```
+
+      I am now providing sample tweets and identified airline names as a CSV. Please use these examples to improve your accuracy.
+      Examples:
+      ---------
+      {examples}
+
+
+      TASK:
+      Now process this tweet:
+
+      TWEET:
+      {tweet}
   # 2: FEW-SHOT PROMPT
-
-
-Your output must strictly follow these guidelines.
   airline_name_mapping:
     system: You are an expert in building a reference dictionary of airline names to their aliases that would help identify them in tweets.
     # prompt: |
