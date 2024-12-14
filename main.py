@@ -9,6 +9,7 @@ from datetime import datetime
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_incrementing
 from scipy import spatial
+import click
 from openai import OpenAI
 
 # ========================================
@@ -354,9 +355,15 @@ def embeddings_rag_search(
 # Main Application Actions
 #
 # These functions are the main application functions:
+#   - run_zero_shot: run the zero-shot method on the test set
+#   - run_few_shot: run the few-shot method on the test set
+#   - run_rag: run the RAG method on the test set
+#   - run_fine_tuning: run the fine-tuning method on the test set
+#   - build_rag_embeddings_db: compute and save embeddings used in RAG method
+#   - submit_fine_tuning_model_job: submit a model fine-tuning job used in fine-tuning method
 # ========================================
 
-def compute_and_save_embeddings_for_training_set(
+def build_rag_embeddings_db(
         training_file: str = None,                     # path to the training file
         ) -> None:
     
@@ -376,7 +383,7 @@ def compute_and_save_embeddings_for_training_set(
     logger.info(f"Embeddings saved to file: {embeddings_file}")
 
 
-def zero_shot_example(
+def run_zero_shot(
         df: pd.DataFrame,
         tweet_col: str = "tweet",
         airlines_col: str = "airlines_mentioned",
@@ -404,7 +411,7 @@ def zero_shot_example(
     return df
 
 
-def few_shot_example(
+def run_few_shot(
         df: pd.DataFrame,
         num_examples: int = 10,
         tweet_col: str = "tweet",
@@ -437,7 +444,7 @@ def few_shot_example(
     return df
 
 
-def rag_example(
+def run_rag(
         df: pd.DataFrame,
         num_examples: int = 5,
         tweet_col: str = "tweet",
@@ -469,7 +476,7 @@ def rag_example(
     return df
 
 
-def finetuning_example(
+def run_fine_tuning(
         df: pd.DataFrame,
         tweet_col: str = "tweet",
         airlines_col: str = "airlines_mentioned",
@@ -502,7 +509,7 @@ def finetuning_example(
     return df
 
 
-def fine_tune_model_jobrun():
+def submit_fine_tuning_model_job():
     # from a gpt model based on the training set
     # load the training set
     try:
@@ -570,8 +577,63 @@ def fine_tune_model_jobrun():
 
 
 
-def main():
-    pass
+@click.command()
+@click.option('--run', type=click.Choice(['zero_shot', 'few_shot', 'rag', 'fine_tuning', 'setup_rag', 'setup_finetuning'], case_sensitive=False), required=True, help='Action to perform')
+@click.option('--input-file', type=click.Path(exists=True), help='Path to the input file. If omitted airlines_test.csv file is used.', required=False)
+@click.option('--config-file', type=click.Path(exists=True), help='Path to YAML config file. If omitted config.yaml is used.', required=False)
+@click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False), default='INFO', help='Application log level')
+@click.option('--num-examples', type=int, default=10, help='Number of examples to be used with few-shot and RAG methods')
+def main(run, input_file, config_file, log_level, num_examples, **kwargs):
+
+    # setup logging level from the command line
+    logger.handlers[0].setLevel(getattr(logging, log_level.upper(), logging.INFO))
+
+    logger.debug(f"Running action: {run}, input_file: {input_file}, config_file: {config_file}, log_level: {log_level}, num_examples: {num_examples}")
+
+    # load the config file if provided and update the default settings
+    if config_file:
+        global config
+        config = load_config(config_file, config)
+    
+    # setting up input file to process
+    if input_file:
+        logger.info(f"Using input file: {input_file}")
+    else:
+        input_file = config.get("files", {}).get("test_file", None)
+        logger.info(f"Using default input file: {input_file}")
+    if input_file is None or not os.path.exists(input_file):
+        logger.error("Input file is required but either missing or does not exist. Exiting.")
+        return
+    
+    # run the appropriate method based on the command line
+    if run == 'zero_shot':
+        df = read_tweets_to_dataframe(filepath=input_file)
+        df = run_zero_shot(df)
+    elif run == 'few_shot':
+        df = read_tweets_to_dataframe(filepath=input_file)
+        df = run_few_shot(df, num_examples)
+    elif run == 'rag':
+        df = read_tweets_to_dataframe(filepath=input_file)
+        df = run_rag(df, num_examples)
+    elif run == 'fine_tuning':
+        df = read_tweets_to_dataframe(filepath=input_file)
+        df = run_fine_tuning(df)
+    elif run == 'setup_rag':
+        build_rag_embeddings_db(training_file=input_file)
+        logger.info("Embeddings database built.")
+        return
+    elif run == 'setup_finetuning':
+        submit_fine_tuning_model_job()
+        logger.info("Fine-tuning job finished.")
+        return
+    # check results and print stats
+    logger.info("\nResults:\n")
+    print(df)
+    output_file = config.get("files", {}).get("output_file", "data/airline_output.csv")
+    df.to_csv(output_file, index=False)
+    logger.info(f"Results saved to file: {output_file}")
+    # print the stats
+    job_run.print_stats()
 
 
 # ========================================
@@ -590,7 +652,7 @@ def test_similirity_search():
 
 
 def test_fine_tune_model_jobrun():
-    fine_tune_model_jobrun()
+    submit_fine_tuning_model_job()
 
 
 def test_zero_shot_example():
@@ -600,7 +662,7 @@ def test_zero_shot_example():
     # sample a few rows
     df = df.sample(10)
     # run the zero-shot example
-    df = zero_shot_example(df)
+    df = run_zero_shot(df)
     # print the results
     print(df)
     job_run.print_stats()
@@ -614,7 +676,7 @@ def test_few_shot_example():
     df = df.sample(10)
     # run the few-shot example
     num_examples = 20
-    df = few_shot_example(df, num_examples)
+    df = run_few_shot(df, num_examples)
     # print the results
     print(df)
     job_run.print_stats()
@@ -629,7 +691,7 @@ def test_rag_example():
     df = df.sample(10)
     # run the few-shot example
     num_examples = 10
-    df = rag_example(df, num_examples)
+    df = run_rag(df, num_examples)
     # print the results
     print(df)
     job_run.print_stats()
@@ -642,7 +704,7 @@ def test_finetuned_example():
     # sample a few rows
     df = df.sample(10)
     # run the few-shot example
-    df = finetuning_example(df)
+    df = run_fine_tuning(df)
     # print the results
     print(df)
     job_run.print_stats()
@@ -653,10 +715,10 @@ def test_finetuned_example():
 # ========================================
 
 if __name__ == '__main__':
-    # main()
+    main()
     # test_similirity_search()
     # test_fine_tune_model_jobrun()
     # test_zero_shot_example()
-    test_few_shot_example()
+    # test_few_shot_example()
     # test_rag_example()
     # test_finetuned_example()

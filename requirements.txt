@@ -4,4 +4,5 @@ scipy
 tenacity
 pyarrow
 fastparquet
+click
 openai
