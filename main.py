@@ -1,3 +1,4 @@
+import os
 import logging.handlers
 import logging
 import yaml
@@ -7,6 +8,8 @@ from openai import OpenAI
 from tiktoken import encoding_for_model
 from codetiming import Timer
 import csv
+from scipy import spatial
+from tenacity import retry, stop_after_attempt, wait_incrementing
 
 
 DEFAULT_CONFIG_FILE = "config.yaml"
@@ -40,7 +43,7 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
 
 
 # set up module logger
-logger: logging.Logger = setup_logging("DEBUG")
+logger: logging.Logger = setup_logging("INFO")
 
 
 # read config file
@@ -110,6 +113,7 @@ def compute_tokens_for_dataframe(
 client = OpenAI()
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_incrementing(start=0.6, increment=0.6, max=3))
 def chat_completion(
         system_message: str,                    # system message
         prompt: str,                            # user message
@@ -197,42 +201,90 @@ def airline_name_extractor_zeroshot(
             # check if the airlines are correct
             if eval(f"list({row[test_col]})") == airlines:
                 df.at[i, "correct"] = True
-            # if i > 25:
-            #     break
         except Exception as e:
             logger.error(f"Error extracting airline names from tweet: {row[tweet_col]}")
             logger.error(f"Error: {e}")
     return df
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_incrementing(start=0.6, increment=0.6, max=3))
+def get_embeddings(
+        text: str,                              # text to get embeddings for
+        ) -> list:
+    try:
+        # Get the encoding for the specified model
+        embedding_model = config.get("openai", {}).get("embedding_model", "text-embedding-3-small")
+        resp = client.embeddings.create(
+            model=embedding_model,
+            input=text,
+        )
+        logger.debug(f"Embeddings::TokenUsage: total={resp.usage.total_tokens}")
+        return resp.data[0].embedding
+    except Exception as e:
+        logger.warning(f"Error getting embeddings for text: {e}")
+        return []
+
 
 def load_training_set(
         training_file: str,                     # path to the training file
         ) -> pd.DataFrame:
     try:
+        # firs try to see if a cached version of the training set is available
+        # we save a cached version to save tokens for re-computing embeddings
+        cache_file = config["files"]["training_cache"]
+        if os.path.exists(cache_file):
+            logger.info(f"Loading training set from cache file: {cache_file}")
+            df = pd.read_parquet(cache_file)
+            return df
+
+        # if not, then load the training set from the file
+        # read the training file CSV
+        # please note:
+        #   - airlines column is parsed as a list
+        #   - badlines and encoding errors are skipped
         df = pd.read_csv(
             training_file,
             skip_blank_lines=True,
             skipinitialspace=True,
-            encoding_errors='ignore',
-            on_bad_lines='skip',
-            usecols=["tweet", "airlines"],
-            converters={"airlines": eval},
+            encoding_errors='ignore',                   # accounting for utf encoding errors
+            on_bad_lines='skip',                        # skip bad tweets and lines
+            usecols=["tweet", "airlines"],              # ensure required columns are present
+            converters={"airlines": eval},              # parse the airlines column as a list
             )
-        # check the columns to make sure we have the required columns
-        # cols = ["tweet", "airlines"]
-        # if not all([col in df.columns for col in cols]):
-        #     logger.error(f"Missing required columns in training file: {cols}")
-        #     raise ValueError(f"Missing required columns in training file: {cols}")
-        # parse the airlines column as a list
-        # df["airlines"] = df["airlines
-        # check if airlines column is actually a list of stirngs
+        # check if all airlines were correctly parsed as a list
         if not all([isinstance(x, list) for x in df["airlines"]]):
             logger.error(f"airlines column is not a list of strings")
             raise ValueError(f"airlines column is not a list of strings")
+        
+        # calculate embeddings for the tweets column
+        logger.info(f"Calculating embeddings for on tweets for the first time. This will take a few minutes.")
+        logger.info("Embeddings are cached for future use.")
+        df["tweet_embeddings"] = df["tweet"].map(get_embeddings)
+
+        # cache the training set for future use
+        df.to_parquet(cache_file)
+        # return the training dataframe with embeddings
         return df
     except Exception as e:
         logger.error(f"Error loading training set from file: {training_file}")
+        raise e
+
+
+def get_similiar_tweets_from_embeddings(
+        tweet: str,                             # tweet to get similiar tweets for
+        training_df: pd.DataFrame,              # training dataframe with embeddings
+        nrows: int = 5,                         # number of similiar tweets to return
+        embeddings_col: str = "tweet_embeddings",   # column name for the embeddings
+        ) -> pd.DataFrame:
+    try:
+        # get the embeddings for the tweet
+        tweet_embeddings = get_embeddings(tweet)
+        # calculate the cosine similarity between the tweet and all the tweets in the training set
+        training_df["similarity"] = training_df[embeddings_col].map(lambda x: 1 - spatial.distance.cosine(tweet_embeddings, x))
+        # get the top num_tweets similiar tweets
+        return training_df.nlargest(nrows, "similarity")
+    except Exception as e:
+        logger.error(f"Error getting similiar tweets from embeddings: {e}")
         raise e
 
 
@@ -267,13 +319,50 @@ def few_shot_airline_name_extractor(
             # check if the airlines are correct
             if eval(f"list({row[test_col]})") == airlines:
                 df.at[i, "correct"] = True
-            if i > 50:
-                break
+            # if i > 50:
+            #     break
         except Exception as e:
             logger.error(f"Error extracting airline names from tweet: {row[tweet_col]}")
             logger.error(f"Error: {e}")
     return df
 
+
+def fewshot_rag_airline_name_extractor(
+        df: pd.DataFrame,
+        num_examples: int = 5,
+        tweet_col: str = "tweet",
+        airlines_col: str = "airlines_mentioned",
+        test_col: str = "airlines",
+        ):
+    # load the training set
+    training_file = config["files"]["training_file"]
+    training_df = load_training_set(training_file)
+    df[airlines_col] = None
+    df["correct"] = False
+    for i, row in df.iterrows():
+        try:
+            logger.info(f"line: {i + 1} tweet: {row[tweet_col]}")
+            # call the completion function
+            system_message = config["prompts"]["few_shot"]["system"]
+            prompt = config["prompts"]["few_shot"]["prompt"]
+            # find smiliar tweets from a cosine similarity search on embeddings
+            sim_tweets = get_similiar_tweets_from_embeddings(row[tweet_col], training_df, nrows=num_examples)
+            examples_csv = sim_tweets[["tweet", "airlines"]].to_csv(index=False)
+            prompt = prompt.format(tweet=row[tweet_col], examples=examples_csv)
+            json_resp = chat_completion(system_message, prompt)
+            # parse the response
+            airlines = parse_response_json_for_list_of_airlines(json_resp)
+            # add the airlines to the dataframe
+            df.at[i, airlines_col] = airlines
+            # check if the airlines are correct
+            if eval(f"list({row[test_col]})") == airlines:
+                df.at[i, "correct"] = True
+            # if i > 50:
+            #     break
+        except Exception as e:
+            logger.error(f"Error extracting airline names from tweet: {row[tweet_col]}")
+            logger.error(f"Error: {e}")
+    return df
 
 
 def chunk_dataframe_by_max_tokens(df: pd.DataFrame, max_tokens=12000, tokens_col: str = "tokens"):
@@ -407,9 +496,20 @@ def main():
             )
     # rdf = airline_name_extractor_zeroshot(df)
     # rdf.to_csv("data/airlines_zeroshot.csv", index=False)
-    rdf = few_shot_airline_name_extractor(df)
-    rdf.to_csv("data/airlines_fewshot.csv", index=False)
+    # rdf = few_shot_airline_name_extractor(df)
+    # rdf.to_csv("data/airlines_fewshot.csv", index=False)
+
+
+def test_similirity_search():
+    # load the training set
+    training_file = config["files"]["training_file"]
+    training_df = load_training_set(training_file)
+    print(training_df)
+    tweet = r"US Airways i tried it but doesnt help very much and Reservation seems to be overwhelmed with some issues"
+    sim_tweets = get_similiar_tweets_from_embeddings(tweet, training_df)
+    print(sim_tweets)
 
 
 if __name__ == '__main__':
-    main()
+    # main()
+    test_similirity_search()

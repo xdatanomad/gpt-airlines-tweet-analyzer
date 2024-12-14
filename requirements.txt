@@ -2,5 +2,8 @@ pandas
 jupyterlab
 codetiming
 humanfriendly
-tiktoken
+scipy
+tenacity
+pyarrow
+fastparquet
 openai

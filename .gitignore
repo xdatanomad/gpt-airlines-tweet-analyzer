@@ -4,6 +4,8 @@
 data/
 *.csv
 *.log
+*.parquet
+report.md
 
 # ========================
 # PYTHON FILES AND FOLDERS
